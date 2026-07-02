@@ -1,0 +1,274 @@
+import math
+from abc import ABC, abstractmethod
+from itertools import zip_longest
+from typing import Dict, Optional, cast
+
+import av
+import numpy as np
+
+from media_checker.errors import MediaError, MetricError
+from media_checker.media import RAW_FORMATS, VideoSource
+
+
+INFINITE_PSNR_VALUE = 1000.0
+PSNR_DECIMAL_PLACES = 6
+
+H264_LEVEL_DIVISOR = 10
+H265_LEVELS = {
+    30  : "1.0",
+    60  : "2.0",
+    63  : "2.1",
+    90  : "3.0",
+    93  : "3.1",
+    120 : "4.0",
+    123 : "4.1",
+    150 : "5.0",
+    153 : "5.1",
+    156 : "5.2",
+    180 : "6.0",
+    183 : "6.1",
+    186 : "6.2",
+}
+
+RAW_COMPARISON_FORMATS = {
+    raw_format.av_format : raw_format.comparison_format
+    for raw_format in RAW_FORMATS.values()
+}
+
+
+class MetricContext:
+    def __init__(
+        self,
+        input_source: VideoSource,
+        reference_source: Optional[VideoSource],
+    ):
+        self.input_source     = input_source
+        self.reference_source = reference_source
+
+
+class Metric(ABC):
+    """Calculate one result from a subject and optional reference."""
+
+    @abstractmethod
+    def calculate(self, context: MetricContext):
+        raise NotImplementedError
+
+
+class MetadataMetric(Metric):
+    field_name = ""
+
+    def calculate(self, context: MetricContext):
+        metadata = context.input_source.metadata()
+        value    = getattr(metadata, self.field_name)
+
+        if value is None:
+            raise MetricError(
+                "Metric '{}' is unavailable for the input media".format(
+                    self.field_name
+                )
+            )
+
+        return value
+
+
+class WidthMetric(MetadataMetric):
+    field_name = "width"
+
+
+class HeightMetric(MetadataMetric):
+    field_name = "height"
+
+
+class FramerateMetric(MetadataMetric):
+    field_name = "framerate"
+
+    def calculate(self, context: MetricContext) -> str:
+        value = super().calculate(context)
+        return "{}/{}".format(value.numerator, value.denominator)
+
+
+class ProfileMetric(MetadataMetric):
+    field_name = "profile"
+
+    def calculate(self, context: MetricContext) -> str:
+        if context.input_source.is_raw:
+            raise MetricError("Metric 'profile' is not available for raw media")
+
+        return str(super().calculate(context))
+
+
+class LevelMetric(Metric):
+    def calculate(self, context: MetricContext) -> str:
+        if context.input_source.is_raw:
+            raise MetricError("Metric 'level' is not available for raw media")
+
+        metadata = context.input_source.metadata()
+
+        if metadata.level is None:
+            raise MetricError("Metric 'level' is unavailable for the input media")
+
+        return _level_text(metadata.codec_name, metadata.level)
+
+
+class PsnrMetric(Metric):
+    def calculate(self, context: MetricContext) -> float:
+        reference = context.reference_source
+
+        if reference is None:
+            raise MetricError("PSNR requires a reference descriptor")
+
+        input_metadata     = context.input_source.metadata()
+        reference_metadata = reference.metadata()
+
+        if (
+            input_metadata.width != reference_metadata.width
+            or input_metadata.height != reference_metadata.height
+        ):
+            raise MetricError(
+                "PSNR requires input and reference resolutions to match"
+            )
+
+        if not context.input_source.is_raw and not reference.is_raw:
+            if (
+                input_metadata.framerate is None
+                or reference_metadata.framerate is None
+            ):
+                raise MetricError(
+                    "PSNR requires encoded input and reference framerates"
+                )
+
+            if input_metadata.framerate != reference_metadata.framerate:
+                raise MetricError(
+                    "PSNR requires encoded input and reference framerates to match"
+                )
+
+        return self._calculate_frames(context.input_source, reference)
+
+    def _calculate_frames(
+        self,
+        input_source: VideoSource,
+        reference_source: VideoSource,
+    ) -> float:
+        missing = object()
+        minimum = math.inf
+        target_format = None
+        frame_count   = 0
+
+        try:
+            pairs = zip_longest(
+                input_source.frames(),
+                reference_source.frames(),
+                fillvalue = missing,
+            )
+
+            for input_frame, reference_frame in pairs:
+                if input_frame is missing or reference_frame is missing:
+                    raise MetricError(
+                        "PSNR requires input and reference frame counts to match"
+                    )
+
+                input_video_frame     = cast(av.VideoFrame, input_frame)
+                reference_video_frame = cast(av.VideoFrame, reference_frame)
+
+                if target_format is None:
+                    target_format = _comparison_format(
+                        reference_source,
+                        reference_video_frame,
+                    )
+
+                frame_psnr = _frame_psnr(
+                    input_video_frame,
+                    reference_video_frame,
+                    target_format,
+                )
+                minimum   = min(minimum, frame_psnr)
+                frame_count += 1
+        except MetricError:
+            raise
+        except (ValueError, av.FFmpegError) as error:
+            raise MetricError("PSNR frame conversion failed: {}".format(error)) from error
+        except MediaError as error:
+            raise MetricError(str(error)) from error
+
+        if frame_count == 0:
+            raise MetricError("PSNR requires at least one decoded frame")
+
+        if math.isinf(minimum):
+            return INFINITE_PSNR_VALUE
+
+        return round(minimum, PSNR_DECIMAL_PLACES)
+
+
+def _comparison_format(source: VideoSource, frame: av.VideoFrame) -> str:
+    if source.is_raw:
+        raw_format = RAW_FORMATS[source.descriptor.format or ""]
+        return raw_format.comparison_format
+
+    format_name = frame.format.name
+    return RAW_COMPARISON_FORMATS.get(format_name, format_name)
+
+
+def _frame_psnr(
+    input_frame: av.VideoFrame,
+    reference_frame: av.VideoFrame,
+    target_format: str,
+) -> float:
+    if (
+        input_frame.width != reference_frame.width
+        or input_frame.height != reference_frame.height
+    ):
+        raise MetricError("PSNR frame resolutions do not match")
+
+    input_array = input_frame.to_ndarray(format = target_format)
+    reference_array = reference_frame.to_ndarray(format = target_format)
+
+    if input_array.shape != reference_array.shape:
+        raise MetricError("PSNR converted frame shapes do not match")
+
+    difference = (
+        input_array.astype(np.float64)
+        - reference_array.astype(np.float64)
+    )
+    mean_squared_error = float(np.mean(np.square(difference)))
+
+    if mean_squared_error == 0:
+        return math.inf
+
+    peak = _sample_peak(target_format, input_array.dtype.itemsize)
+    return 10.0 * math.log10((peak * peak) / mean_squared_error)
+
+
+def _sample_peak(format_name: str, item_size: int) -> int:
+    try:
+        video_format = av.VideoFormat(format_name)
+        components = getattr(video_format, "components", ())
+        bit_depth = max(component.bits for component in components)
+    except (AttributeError, ValueError):
+        bit_depth = item_size * 8
+
+    return (1 << bit_depth) - 1
+
+
+def _level_text(codec_name: Optional[str], level: int) -> str:
+    codec_name = (codec_name or "").lower()
+
+    if codec_name == "h264":
+        if level == 9:
+            return "1b"
+
+        return "{:.1f}".format(level / H264_LEVEL_DIVISOR)
+
+    if codec_name in ("hevc", "h265"):
+        return H265_LEVELS.get(level, str(level))
+
+    return str(level)
+
+
+METRIC_HANDLERS: Dict[str, Metric] = {
+    "width"     : WidthMetric(),
+    "height"    : HeightMetric(),
+    "framerate" : FramerateMetric(),
+    "level"     : LevelMetric(),
+    "profile"   : ProfileMetric(),
+    "psnr"      : PsnrMetric(),
+}
