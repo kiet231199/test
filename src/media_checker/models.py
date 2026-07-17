@@ -34,6 +34,14 @@ class MediaDescriptor:
 
 
 @dataclass(frozen = True)
+class DescriptorSet:
+    """Validated input media and optional comparison reference."""
+
+    input     : MediaDescriptor
+    reference : Optional[MediaDescriptor]
+
+
+@dataclass(frozen = True)
 class CheckRequest:
     """One subject, optional reference, and ordered metrics to calculate."""
 

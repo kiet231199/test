@@ -6,10 +6,10 @@ encoded H.264/H.265 elementary streams, CLI design, and automated testing.
 
 # Project context
 
-`media-check` is an independent Python application under `check_app/`. It
-reads media descriptors, calculates video metadata and PSNR, and writes an
-ordered YAML result. It must remain independent from the test-script generator
-in the parent repository.
+`media-check` is an independent Python application in this repository. It reads
+media descriptors, calculates video metadata and PSNR, and writes an ordered
+YAML result. It must remain independent from the test-script generator in the
+parent repository.
 
 - Package: `media-checker`
 - Console command: `media-check`
@@ -28,10 +28,11 @@ the parent repository.
 
 # Current architecture
 
-- `cli.py` parses arguments, loads descriptors, calls the core checker, writes
+- `cli.py` parses arguments, loads the descriptor set, calls the core checker, writes
   results, and maps outcomes to process exit statuses.
-- `descriptors.py` loads and validates YAML descriptors and resolves relative
-  media paths from the descriptor file's directory.
+- `descriptors.py` loads the combined YAML descriptor, expands its environment,
+  validates input and optional reference media, and resolves relative media
+  paths from the descriptor file's directory.
 - `models.py` contains the request, descriptor, metadata, and result data
   structures. These models form the reusable boundary for a future web API.
 - `media.py` defines raw-format geometry and the raw/encoded `VideoSource`
@@ -50,17 +51,22 @@ server later.
 # CLI contract
 
 ```text
-media-check --input <descriptor> [--reference <descriptor>]
-            --check <metric> [<metric> ...] [--output <result>]
+media-check --input <descriptor> --check <metric> [<metric> ...]
+            [--output <result>]
 ```
 
-- `--input` / `-i` is required.
-- `--reference` / `-r` is optional and is required by PSNR.
+- `--input` / `-i` is required and contains input plus optional reference media.
 - `--check` / `-c` accepts one or more metrics.
 - `--output` / `-o` defaults to `metrics-result.yaml`.
 - Supported metrics are `width`, `height`, `framerate`, `level`, `profile`,
   and `psnr`.
 - Duplicate metric names are removed while preserving request order.
+- The removed `--reference` / `-r` option is an argument error.
+- Help lists every metric, capitalizes headings and messages, and formats option
+  aliases before one shared metavar.
+- The `media-check ...` portion of the usage line is yellow only when help is
+  written to an interactive terminal.
+- Argument errors print the complete help followed by a capitalized error.
 - Exit status `0` means every metric succeeded.
 - Exit status `1` means at least one requested metric failed.
 - Exit status `2` means the request, descriptor, or output configuration was
@@ -68,33 +74,58 @@ media-check --input <descriptor> [--reference <descriptor>]
 
 # Descriptor contract
 
-Descriptors are YAML mappings. Media extensions and raw-format names are
-handled case-insensitively.
+Descriptors are YAML mappings with a required `input`, optional `reference`,
+and optional `env`. The former flat media descriptor is not supported. Media
+extensions and raw-format names are handled case-insensitively.
+
+```yaml
+env:
+  WORK_DIR: /absolute/path/to/media
+
+input:
+  path: ${WORK_DIR}/output.yuv
+  width: 224
+  height: 96
+  framerate: "24/1"
+  format: NV12
+  frame_count: 300
+  stride: 256
+  sliceheight: 96
+
+reference:
+  path: ${WORK_DIR}/reference.265
+```
+
+`reference: null` is treated as no reference. Unknown top-level and media
+fields are ignored. Recognized fields consumed for a media type are validated,
+and a supplied reference is always validated even if PSNR is not requested.
 
 The `path` field must be a non-empty string that resolves to an existing
 regular file. Relative media paths are resolved from the descriptor file's
 directory.
 
-Encoded `.264` and `.265` descriptors require only a path:
+Encoded `.264` and `.265` media sections require only a path:
 
 ```yaml
-path: media/output.265
+input:
+  path: media/output.265
 ```
 
 Recognized raw fields may be present for encoded media, but encoded metadata
 is read from the stream and those fields are ignored.
 
-Raw `.raw` and `.yuv` descriptors require every field below:
+Raw `.raw` and `.yuv` media sections require every field below:
 
 ```yaml
-path: media/output.yuv
-width: 224
-height: 96
-framerate: "24/1"
-format: NV12
-frame_count: 300
-stride: 256
-sliceheight: 96
+input:
+  path: media/output.yuv
+  width: 224
+  height: 96
+  framerate: "24/1"
+  format: NV12
+  frame_count: 300
+  stride: 256
+  sliceheight: 96
 ```
 
 - Supported raw formats: `NV12`, `YUY2`, `RGB16`, `RGB`, `RGBA`, and `GRAY8`.
@@ -102,7 +133,19 @@ sliceheight: 96
 - Dimensions, frame count, stride, and slice height must be positive integers.
 - Raw dimensions and storage geometry must satisfy format alignment rules.
 - Raw file size must exactly match the descriptor geometry and frame count.
-- Unknown descriptor fields are configuration errors.
+
+Environment variable rules:
+
+- Names match `[A-Za-z_][A-Za-z0-9_]*` and values are YAML scalars.
+- String values in `env` expand once using only a snapshot of system variables.
+- Descriptor values override that snapshot; `null` unsets a variable.
+- The merged values expand `${NAME}` in recognized, consumed string fields of
+  `input` and `reference` without modifying the process environment.
+- A full replacement preserves its scalar value or converts system text to the
+  required field type. Embedded replacements are converted to text.
+- Expansion is not recursive and has no literal `${...}` escape.
+- Missing variables, malformed expressions, invalid names, and collection
+  values in `env` are configuration errors.
 
 # Metric behavior
 
@@ -144,7 +187,18 @@ configuration failure uses `status: failed`, a top-level `error`, and an empty
 # Development workflow
 
 The user has no sudo permission and may have only the `python3` command. From
-`check_app/`, use the exported Python 3.10.7 environment:
+the project root, the automated setup is:
+
+```bash
+source ./setup.sh
+```
+
+`setup.sh` requires Python 3.8 through 3.10, creates or validates `.venv`,
+builds and installs the wheel, removes generated build output, and leaves the
+environment active when sourced. When executed normally, it installs the app
+and prints the activation command. It never deletes an incompatible `.venv`.
+
+The equivalent manual environment setup is:
 
 ```bash
 python3 --version
@@ -154,7 +208,7 @@ python3 -m pip install --upgrade pip
 python3 -m pip install .
 ```
 
-Run the complete application test suite from `check_app/`:
+Run the complete application test suite from the project root:
 
 ```bash
 PYTHONPATH=src:. python3 -m unittest discover -s tests -v
@@ -176,7 +230,7 @@ future features.
 
 # Workspace constraints
 
-- Keep every application change inside `check_app/`.
+- Keep every application change inside this repository.
 - Do not modify or depend on the parent repository's source or generated test
   scripts.
 - Preserve unrelated working-tree changes. In particular, the parent
@@ -192,11 +246,12 @@ future features.
   reporting completion.
 - Leave the application directory free of generated outputs when finished.
 
-# New requirement
+# Next requirement
 
 <!-- Describe the next feature or change here. Include expected behavior,
 input/output examples, validation rules, compatibility constraints, and any
-result-schema changes. -->
+result-schema changes. After every update, keep README.md and PROMPT.md aligned
+with the latest implementation. -->
 
 
 

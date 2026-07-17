@@ -1,7 +1,10 @@
+import os
+import re
+from dataclasses import dataclass
 from fractions import Fraction
 from math import gcd
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 import yaml
 
@@ -16,11 +19,15 @@ from media_checker.media import (
 from media_checker.models import (
     ENCODED_MEDIA_TYPE,
     RAW_MEDIA_TYPE,
+    DescriptorSet,
     MediaDescriptor,
 )
 
 
-PATH_FIELD = "path"
+ENV_FIELD       = "env"
+INPUT_FIELD     = "input"
+REFERENCE_FIELD = "reference"
+PATH_FIELD      = "path"
 
 RAW_FIELDS = (
     "width",
@@ -32,14 +39,68 @@ RAW_FIELDS = (
     "sliceheight",
 )
 
-ALLOWED_FIELDS = frozenset((PATH_FIELD,) + RAW_FIELDS)
+INTEGER_FIELDS = frozenset((
+    "width",
+    "height",
+    "frame_count",
+    "stride",
+    "sliceheight",
+))
+
+ENV_NAME_PATTERN  = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+ENV_TOKEN_PATTERN = re.compile(r"\$\{([^{}]*)\}")
 
 
-def load_descriptor(descriptor_path: Path) -> MediaDescriptor:
-    """Load and validate one encoded or raw YAML media descriptor."""
+@dataclass(frozen = True)
+class _EnvironmentValue:
+    value          : Any
+    system_derived : bool
+
+
+def load_descriptor(descriptor_path: Path) -> DescriptorSet:
+    """Load one document containing input and optional reference media."""
 
     descriptor_path = descriptor_path.resolve()
+    values          = _load_yaml(descriptor_path)
+    environment     = _descriptor_environment(values.get(ENV_FIELD, {}))
 
+    input_values = values.get(INPUT_FIELD)
+
+    if not isinstance(input_values, dict):
+        raise ConfigurationError(
+            "Descriptor field 'input' must contain a YAML mapping"
+        )
+
+    input_descriptor = _media_descriptor(
+        input_values,
+        descriptor_path,
+        environment,
+        INPUT_FIELD,
+    )
+
+    reference_values = values.get(REFERENCE_FIELD)
+    reference_descriptor = None  # type: Optional[MediaDescriptor]
+
+    if reference_values is not None:
+        if not isinstance(reference_values, dict):
+            raise ConfigurationError(
+                "Descriptor field 'reference' must contain a YAML mapping or null"
+            )
+
+        reference_descriptor = _media_descriptor(
+            reference_values,
+            descriptor_path,
+            environment,
+            REFERENCE_FIELD,
+        )
+
+    return DescriptorSet(
+        input     = input_descriptor,
+        reference = reference_descriptor,
+    )
+
+
+def _load_yaml(descriptor_path: Path) -> Dict[str, Any]:
     try:
         content = descriptor_path.read_text(encoding = "utf-8")
     except OSError as error:
@@ -62,9 +123,75 @@ def load_descriptor(descriptor_path: Path) -> MediaDescriptor:
             "Descriptor '{}' must contain a YAML mapping".format(descriptor_path)
         )
 
-    _validate_fields(values)
+    return values
 
-    path = _media_path(values.get(PATH_FIELD), descriptor_path)
+
+def _descriptor_environment(value: Any) -> Dict[str, _EnvironmentValue]:
+    if not isinstance(value, dict):
+        raise ConfigurationError("Descriptor field 'env' must contain a YAML mapping")
+
+    system_environment = {
+        name : _EnvironmentValue(raw_value, True)
+        for name, raw_value in os.environ.items()
+    }
+    descriptor_values = {}  # type: Dict[str, _EnvironmentValue]
+
+    for name, raw_value in value.items():
+        if not isinstance(name, str) or not ENV_NAME_PATTERN.fullmatch(name):
+            raise ConfigurationError(
+                "Descriptor environment variable name '{}' is invalid".format(name)
+            )
+
+        if not _is_scalar(raw_value):
+            raise ConfigurationError(
+                "Descriptor environment variable '{}' must be a scalar value".format(
+                    name
+                )
+            )
+
+        expanded_value = raw_value
+        system_derived = False
+
+        if isinstance(raw_value, str):
+            expanded_value, _, system_derived = _expand_string(
+                raw_value,
+                system_environment,
+                "environment variable '{}'".format(name),
+            )
+
+        descriptor_values[name] = _EnvironmentValue(
+            expanded_value,
+            system_derived,
+        )
+
+    environment = dict(system_environment)
+
+    for name, expanded_value in descriptor_values.items():
+        if expanded_value.value is None:
+            environment.pop(name, None)
+        else:
+            environment[name] = expanded_value
+
+    return environment
+
+
+def _is_scalar(value: Any) -> bool:
+    return value is None or isinstance(value, (str, int, float, bool))
+
+
+def _media_descriptor(
+    values: Mapping[str, Any],
+    descriptor_path: Path,
+    environment: Mapping[str, _EnvironmentValue],
+    section_name: str,
+) -> MediaDescriptor:
+    path_value = _field_value(
+        values.get(PATH_FIELD),
+        PATH_FIELD,
+        environment,
+        section_name,
+    )
+    path      = _media_path(path_value, descriptor_path, section_name)
     extension = media_extension(path)
 
     if extension not in SUPPORTED_EXTENSIONS:
@@ -82,25 +209,111 @@ def load_descriptor(descriptor_path: Path) -> MediaDescriptor:
             extension  = extension,
         )
 
-    descriptor = _raw_descriptor(path, extension, values)
+    descriptor = _raw_descriptor(
+        path,
+        extension,
+        values,
+        environment,
+        section_name,
+    )
     validate_raw_file(descriptor)
     return descriptor
 
 
-def _validate_fields(values: Dict[str, Any]) -> None:
-    unknown_fields = sorted(set(values) - ALLOWED_FIELDS)
+def _field_value(
+    value: Any,
+    field_name: str,
+    environment: Mapping[str, _EnvironmentValue],
+    section_name: str,
+) -> Any:
+    if not isinstance(value, str):
+        return value
 
-    if unknown_fields:
+    expanded, full_replacement, system_derived = _expand_string(
+        value,
+        environment,
+        "field '{}.{}'".format(section_name, field_name),
+    )
+
+    if not full_replacement:
+        return expanded
+
+    if (
+        full_replacement
+        and system_derived
+        and field_name in INTEGER_FIELDS
+        and isinstance(expanded, str)
+    ):
+        if re.fullmatch(r"[+-]?[0-9]+", expanded):
+            return int(expanded, 10)
+
+    return expanded
+
+
+def _expand_string(
+    value: str,
+    environment: Mapping[str, _EnvironmentValue],
+    location: str,
+) -> Tuple[Any, bool, bool]:
+    matches = list(ENV_TOKEN_PATTERN.finditer(value))
+    unmatched_text = ENV_TOKEN_PATTERN.sub("", value)
+
+    if "${" in unmatched_text:
         raise ConfigurationError(
-            "Descriptor contains unknown field(s): {}".format(
-                ", ".join(unknown_fields)
-            )
+            "Descriptor {} contains a malformed environment variable".format(location)
         )
 
+    for match in matches:
+        name = match.group(1)
 
-def _media_path(value: Any, descriptor_path: Path) -> Path:
+        if not ENV_NAME_PATTERN.fullmatch(name):
+            raise ConfigurationError(
+                "Descriptor {} contains invalid environment variable '${{{}}}'".format(
+                    location,
+                    name,
+                )
+            )
+
+        if name not in environment:
+            raise ConfigurationError(
+                "Descriptor {} references missing environment variable '{}'".format(
+                    location,
+                    name,
+                )
+            )
+
+    full_match = ENV_TOKEN_PATTERN.fullmatch(value)
+
+    if full_match is not None:
+        environment_value = environment[full_match.group(1)]
+        return (
+            environment_value.value,
+            True,
+            environment_value.system_derived,
+        )
+
+    if not matches:
+        return value, False, False
+
+    fields = []
+    position = 0
+
+    for match in matches:
+        fields.append(value[position:match.start()])
+        fields.append(str(environment[match.group(1)].value))
+        position = match.end()
+
+    fields.append(value[position:])
+    return "".join(fields), False, False
+
+
+def _media_path(value: Any, descriptor_path: Path, section_name: str) -> Path:
     if not isinstance(value, str) or not value.strip():
-        raise ConfigurationError("Descriptor field 'path' must be a non-empty string")
+        raise ConfigurationError(
+            "Descriptor field '{}.path' must be a non-empty string".format(
+                section_name
+            )
+        )
 
     path = Path(value)
 
@@ -113,7 +326,9 @@ def _media_path(value: Any, descriptor_path: Path) -> Path:
 def _raw_descriptor(
     path: Path,
     extension: str,
-    values: Dict[str, Any],
+    values: Mapping[str, Any],
+    environment: Mapping[str, _EnvironmentValue],
+    section_name: str,
 ) -> MediaDescriptor:
     missing_fields = [field for field in RAW_FIELDS if field not in values]
 
@@ -124,7 +339,11 @@ def _raw_descriptor(
             )
         )
 
-    raw_format = values["format"]
+    expanded_values = {
+        field : _field_value(values[field], field, environment, section_name)
+        for field in RAW_FIELDS
+    }
+    raw_format = expanded_values["format"]
 
     if not isinstance(raw_format, str) or not raw_format.strip():
         raise ConfigurationError("Raw descriptor field 'format' must be a string")
@@ -138,13 +357,19 @@ def _raw_descriptor(
         path        = path,
         media_type  = RAW_MEDIA_TYPE,
         extension   = extension,
-        width       = _positive_integer(values["width"], "width"),
-        height      = _positive_integer(values["height"], "height"),
-        framerate   = _framerate(values["framerate"]),
+        width       = _positive_integer(expanded_values["width"], "width"),
+        height      = _positive_integer(expanded_values["height"], "height"),
+        framerate   = _framerate(expanded_values["framerate"]),
         format      = raw_format,
-        frame_count = _positive_integer(values["frame_count"], "frame_count"),
-        stride      = _positive_integer(values["stride"], "stride"),
-        sliceheight = _positive_integer(values["sliceheight"], "sliceheight"),
+        frame_count = _positive_integer(
+            expanded_values["frame_count"],
+            "frame_count",
+        ),
+        stride      = _positive_integer(expanded_values["stride"], "stride"),
+        sliceheight = _positive_integer(
+            expanded_values["sliceheight"],
+            "sliceheight",
+        ),
     )
 
 
