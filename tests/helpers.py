@@ -81,6 +81,23 @@ def encode_elementary_video(
     rate: Fraction = Fraction(24, 1),
     frame_count: int = 2,
 ) -> None:
+    encode_container_video(
+        path,
+        codec_name,
+        container_format,
+        rate,
+        frame_count,
+    )
+
+
+def encode_container_video(
+    path: Path,
+    codec_name: str,
+    container_format: str,
+    rate: Fraction = Fraction(24, 1),
+    frame_count: int = 2,
+    include_audio: bool = False,
+) -> None:
     width  = 16
     height = 16
 
@@ -92,6 +109,12 @@ def encode_elementary_video(
 
         if codec_name == "libx265":
             stream.options = {"x265-params" : "log-level=error:pools=1"}
+
+        audio_stream = None
+
+        if include_audio:
+            audio_stream = container.add_stream("aac", rate = 48000)
+            audio_stream.layout = "mono"
 
         for frame_index in range(frame_count):
             pixels = np.full(
@@ -107,3 +130,21 @@ def encode_elementary_video(
 
         for packet in stream.encode():
             container.mux(packet)
+
+        if audio_stream is not None:
+            for audio_index in range(2):
+                samples = np.zeros((1, 1024), dtype = np.float32)
+                audio_frame = av.AudioFrame.from_ndarray(
+                    samples,
+                    format = "fltp",
+                    layout = "mono",
+                )
+                audio_frame.pts         = audio_index * 1024
+                audio_frame.sample_rate = 48000
+                audio_frame.time_base   = Fraction(1, 48000)
+
+                for packet in audio_stream.encode(audio_frame):
+                    container.mux(packet)
+
+            for packet in audio_stream.encode():
+                container.mux(packet)

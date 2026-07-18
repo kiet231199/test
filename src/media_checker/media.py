@@ -11,14 +11,16 @@ from media_checker.errors import ConfigurationError, MediaError
 from media_checker.models import MediaDescriptor, VideoMetadata
 
 
-RAW_VIDEO_EXTENSIONS     = (".raw", ".yuv")
-ENCODED_VIDEO_EXTENSIONS = (".264", ".265")
-SUPPORTED_EXTENSIONS     = RAW_VIDEO_EXTENSIONS + ENCODED_VIDEO_EXTENSIONS
-
-ENCODED_INPUT_FORMATS = {
+RAW_VIDEO_EXTENSIONS        = (".raw", ".yuv")
+ENCODED_INPUT_FORMATS: Dict[str, Optional[str]] = {
     ".264" : "h264",
     ".265" : "hevc",
+    ".mp4" : None,
 }
+ENCODED_VIDEO_EXTENSIONS = tuple(ENCODED_INPUT_FORMATS)
+SUPPORTED_EXTENSIONS = RAW_VIDEO_EXTENSIONS + ENCODED_VIDEO_EXTENSIONS
+
+SUPPORTED_ENCODED_CODECS = frozenset(("h264", "hevc"))
 
 
 @dataclass(frozen = True)
@@ -337,7 +339,7 @@ class RawVideoSource(VideoSource):
 
 
 class EncodedVideoSource(VideoSource):
-    """Read H.264 or H.265 elementary streams through PyAV."""
+    """Read H.264 or H.265 video from elementary streams or MP4."""
 
     def __init__(self, descriptor: MediaDescriptor):
         super().__init__(descriptor)
@@ -349,12 +351,9 @@ class EncodedVideoSource(VideoSource):
 
         try:
             with self._open() as container:
-                stream  = _first_video_stream(container, self.descriptor.path)
+                stream  = _supported_video_stream(container, self.descriptor.path)
                 context = stream.codec_context
-
-                codec_name = getattr(context, "name", None)
-                if codec_name is None and getattr(context, "codec", None) is not None:
-                    codec_name = context.codec.name
+                codec_name = _codec_name(context)
 
                 pixel_format = getattr(context, "format", None)
 
@@ -381,7 +380,7 @@ class EncodedVideoSource(VideoSource):
     def frames(self) -> Iterator[av.VideoFrame]:
         try:
             with self._open() as container:
-                stream = _first_video_stream(container, self.descriptor.path)
+                stream = _supported_video_stream(container, self.descriptor.path)
 
                 for frame in container.decode(stream):
                     yield frame
@@ -396,15 +395,41 @@ class EncodedVideoSource(VideoSource):
             ) from error
 
     def _open(self):
-        input_format = ENCODED_INPUT_FORMATS[self.descriptor.extension]
-        return av.open(str(self.descriptor.path), mode = "r", format = input_format)
+        input_format = ENCODED_INPUT_FORMATS.get(self.descriptor.extension)
+
+        if input_format is None:
+            return av.open(str(self.descriptor.path), mode = "r")
+
+        return av.open(
+            str(self.descriptor.path),
+            mode   = "r",
+            format = input_format,
+        )
 
 
-def _first_video_stream(container, path: Path):
+def _supported_video_stream(container, path: Path):
     if not container.streams.video:
         raise MediaError("Media '{}' does not contain a video stream".format(path))
 
-    return container.streams.video[0]
+    for stream in container.streams.video:
+        if _codec_name(stream.codec_context) in SUPPORTED_ENCODED_CODECS:
+            return stream
+
+    raise MediaError(
+        "Media '{}' does not contain an H.264 or H.265 video stream".format(path)
+    )
+
+
+def _codec_name(context) -> Optional[str]:
+    codec_name = getattr(context, "name", None)
+
+    if codec_name is None and getattr(context, "codec", None) is not None:
+        codec_name = context.codec.name
+
+    if codec_name is None:
+        return None
+
+    return str(codec_name).lower()
 
 
 def _time_base(framerate: Optional[Fraction]) -> Fraction:

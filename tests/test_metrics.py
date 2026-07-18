@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from media_checker.checker import check
+from media_checker.errors import MediaError
 from media_checker.media import EncodedVideoSource, RAW_FORMATS, VideoSource
 from media_checker.models import (
     ENCODED_MEDIA_TYPE,
@@ -19,6 +20,7 @@ from media_checker.models import (
 )
 
 from tests.helpers import (
+    encode_container_video,
     encode_elementary_video,
     padded_nv12_frame,
     raw_descriptor,
@@ -275,6 +277,49 @@ class EncodedMediaTests(unittest.TestCase):
                     self.assertEqual(result.metrics["height"].value, 16)
                     self.assertIsInstance(result.metrics["framerate"].value, str)
                     self.assertIsInstance(result.metrics["profile"].value, str)
+
+    def test_mp4_h264_and_h265_video_decode_while_audio_is_ignored(self):
+        cases = (
+            ("libx264", "h264"),
+            ("libx265", "hevc"),
+        )
+
+        for encoder_name, expected_codec in cases:
+            with self.subTest(codec = expected_codec):
+                with tempfile.TemporaryDirectory() as folder:
+                    path = Path(folder) / "sample.mp4"
+                    encode_container_video(
+                        path,
+                        encoder_name,
+                        "mp4",
+                        include_audio = True,
+                    )
+                    descriptor = MediaDescriptor(
+                        path       = path,
+                        media_type = ENCODED_MEDIA_TYPE,
+                        extension  = ".mp4",
+                    )
+                    source   = EncodedVideoSource(descriptor)
+                    metadata = source.metadata()
+                    frames   = list(source.frames())
+
+                    self.assertEqual(metadata.codec_name, expected_codec)
+                    self.assertEqual(metadata.width, 16)
+                    self.assertEqual(metadata.height, 16)
+                    self.assertEqual(len(frames), 2)
+
+    def test_mp4_without_h264_or_h265_video_is_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "unsupported.mp4"
+            encode_container_video(path, "mpeg4", "mp4", include_audio = True)
+            descriptor = MediaDescriptor(
+                path       = path,
+                media_type = ENCODED_MEDIA_TYPE,
+                extension  = ".mp4",
+            )
+
+            with self.assertRaisesRegex(MediaError, "H.264 or H.265"):
+                EncodedVideoSource(descriptor).metadata()
 
     def test_encoded_psnr_supports_equal_and_different_framerates(self):
         with tempfile.TemporaryDirectory() as folder:

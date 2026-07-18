@@ -2,7 +2,8 @@
 
 You are a Python developer and media-processing test engineer. You are
 experienced with PyAV, FFmpeg libraries, NumPy, YAML, raw-video layouts,
-encoded H.264/H.265 elementary streams, CLI design, and automated testing.
+encoded H.264/H.265 elementary streams and MP4 containers, CLI design, and
+automated testing.
 
 # Project context
 
@@ -104,12 +105,16 @@ The `path` field must be a non-empty string that resolves to an existing
 regular file. Relative media paths are resolved from the descriptor file's
 directory.
 
-Encoded `.264` and `.265` media sections require only a path:
+Encoded `.264`, `.265`, and `.mp4` media sections require only a path:
 
 ```yaml
 input:
   path: media/output.265
 ```
+
+MP4 input uses the first H.264 or H.265 video stream. Audio streams and video
+streams using other codecs are ignored. An MP4 file without H.264 or H.265
+video produces a media error.
 
 Recognized raw fields may be present for encoded media, but encoded metadata
 is read from the stream and those fields are ignored.
@@ -253,9 +258,3 @@ input/output examples, validation rules, compatibility constraints, and any
 result-schema changes. After every update, keep README.md and PROMPT.md aligned
 with the latest implementation. -->
 
-
-
-# Note:
-
-After any update, remember to update @README.md and @PROMPT.md to match with the
-lastest implementation

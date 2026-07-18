@@ -53,9 +53,13 @@ reference:
 `reference: null` is treated as no reference. The former flat descriptor format
 is not supported.
 
-Encoded H.264/H.265 elementary streams need only a path. Raw `.raw` and `.yuv`
-media require `path`, `width`, `height`, `framerate`, `format`, `frame_count`,
-`stride`, and `sliceheight`.
+Encoded H.264/H.265 elementary streams and `.mp4` containers need only a path.
+MP4 input uses the first H.264 or H.265 video stream; audio and other stream
+formats are ignored. An MP4 file without H.264 or H.265 video is a media error.
+Raw `.raw` and `.yuv` media require `path`, `width`, `height`, `framerate`,
+`format`, `frame_count`, `stride`, and `sliceheight`.
+
+Supported media extensions are `.raw`, `.yuv`, `.264`, `.265`, and `.mp4`.
 
 Supported raw formats are `NV12`, `YUY2`, `RGB16`, `RGB`, `RGBA`, and `GRAY8`.
 `stride` is the first plane's stored bytes per row, and `sliceheight` is the

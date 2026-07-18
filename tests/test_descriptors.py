@@ -82,6 +82,25 @@ class DescriptorTests(unittest.TestCase):
             self.assertIsNone(descriptor.width)
             self.assertIsNone(descriptor.stride)
 
+    def test_mp4_descriptor_is_supported_case_insensitively(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root       = Path(folder)
+            media_path = root / "output.MP4"
+            media_path.write_bytes(b"container")
+            descriptor_path = root / "output.yaml"
+            descriptor_path.write_text(
+                "\n".join([
+                    "input:",
+                    "  path: output.MP4",
+                ]),
+                encoding = "utf-8",
+            )
+
+            descriptor = load_descriptor(descriptor_path).input
+
+            self.assertFalse(descriptor.is_raw)
+            self.assertEqual(descriptor.extension, ".mp4")
+
     def test_reference_is_loaded_and_null_is_treated_as_absent(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
