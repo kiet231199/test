@@ -53,7 +53,9 @@ _media_check_main() {
     local project_root
     local venv_python
     local base_python
-    local wheel_files
+    local wheel_file
+    local wheel_count
+    local candidate
 
     script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || {
         _media_check_fail "Cannot locate the project directory"
@@ -98,15 +100,27 @@ _media_check_main() {
         return 1
     fi
 
-    wheel_files=("$project_root"/dist/media_checker-*.whl)
+    wheel_file=""
+    wheel_count=0
 
-    if [[ ${#wheel_files[@]} -ne 1 || ! -f "${wheel_files[0]}" ]]; then
+    while IFS= read -r candidate; do
+        wheel_file="$candidate"
+        wheel_count=$((wheel_count + 1))
+    done < <(
+        find "$project_root/dist" \
+            -maxdepth 1 \
+            -type f \
+            -name 'media_checker-*.whl' \
+            -print
+    )
+
+    if [[ $wheel_count -ne 1 || ! -f "$wheel_file" ]]; then
         _media_check_cleanup "$project_root"
         _media_check_fail "The build did not create exactly one media-checker wheel"
         return 1
     fi
 
-    if ! "$venv_python" -m pip install --force-reinstall "${wheel_files[0]}"; then
+    if ! "$venv_python" -m pip install --force-reinstall "$wheel_file"; then
         _media_check_cleanup "$project_root"
         _media_check_fail "Cannot install the media-checker wheel"
         return 1

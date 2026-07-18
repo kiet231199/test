@@ -109,6 +109,8 @@ exit 1
             })
             command = """
 cd "$OUTSIDE"
+set -f
+enable -n mapfile
 source "$PROJECT/setup.sh"
 status=$?
 printf 'PWD=%s\nVIRTUAL_ENV=%s\n' "$PWD" "${VIRTUAL_ENV:-}"
@@ -124,11 +126,18 @@ exit "$status"
             )
 
             self.assertEqual(first.returncode, 0, first.stderr)
-            self.assertIn("PWD={}".format(outside), first.stdout)
-            self.assertIn(
-                "VIRTUAL_ENV={}".format(project_root / ".venv"),
-                first.stdout,
-            )
+            if os.name == "nt":
+                self.assertRegex(first.stdout, r"(?m)^PWD=.*/outside$")
+                self.assertRegex(
+                    first.stdout,
+                    r"(?m)^VIRTUAL_ENV=.*/project/\.venv$",
+                )
+            else:
+                self.assertIn("PWD={}".format(outside), first.stdout)
+                self.assertIn(
+                    "VIRTUAL_ENV={}".format(project_root / ".venv"),
+                    first.stdout,
+                )
             self.assertIn("-m venv", log_path.read_text(encoding = "utf-8"))
             self._assert_build_outputs_removed(project_root)
 
