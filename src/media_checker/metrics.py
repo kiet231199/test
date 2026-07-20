@@ -1,6 +1,6 @@
 import math
 from abc import ABC, abstractmethod
-from itertools import zip_longest
+from itertools import islice, zip_longest
 from typing import Dict, Optional, cast
 
 import av
@@ -41,13 +41,20 @@ class MetricContext:
         self,
         input_source: VideoSource,
         reference_source: Optional[VideoSource],
+        input_frame_limit: Optional[int],
     ):
-        self.input_source     = input_source
-        self.reference_source = reference_source
+        self.input_source      = input_source
+        self.reference_source  = reference_source
+        self.input_frame_limit = input_frame_limit
 
 
 class Metric(ABC):
     """Calculate one result from a subject and optional reference."""
+
+    supports_raw_input = False
+
+    def supports(self, context: MetricContext) -> bool:
+        return self.supports_raw_input or not context.input_source.is_raw
 
     @abstractmethod
     def calculate(self, context: MetricContext):
@@ -91,17 +98,11 @@ class ProfileMetric(MetadataMetric):
     field_name = "profile"
 
     def calculate(self, context: MetricContext) -> str:
-        if context.input_source.is_raw:
-            raise MetricError("Metric 'profile' is not available for raw media")
-
         return str(super().calculate(context))
 
 
 class LevelMetric(Metric):
     def calculate(self, context: MetricContext) -> str:
-        if context.input_source.is_raw:
-            raise MetricError("Metric 'level' is not available for raw media")
-
         metadata = context.input_source.metadata()
 
         if metadata.level is None:
@@ -111,6 +112,8 @@ class LevelMetric(Metric):
 
 
 class PsnrMetric(Metric):
+    supports_raw_input = True
+
     def calculate(self, context: MetricContext) -> float:
         reference = context.reference_source
 
@@ -142,17 +145,23 @@ class PsnrMetric(Metric):
                     "PSNR requires encoded input and reference framerates to match"
                 )
 
-        return self._calculate_frames(context.input_source, reference)
+        return self._calculate_frames(
+            context.input_source,
+            reference,
+            context.input_frame_limit,
+        )
 
     def _calculate_frames(
         self,
         input_source: VideoSource,
         reference_source: VideoSource,
+        frame_limit: Optional[int],
     ) -> float:
         missing = object()
         minimum = math.inf
         target_format = None
-        frame_count   = 0
+        compared_frames = 0
+        frame_counts_match = True
 
         try:
             pairs = zip_longest(
@@ -161,11 +170,13 @@ class PsnrMetric(Metric):
                 fillvalue = missing,
             )
 
+            if frame_limit is not None:
+                pairs = islice(pairs, frame_limit)
+
             for input_frame, reference_frame in pairs:
                 if input_frame is missing or reference_frame is missing:
-                    raise MetricError(
-                        "PSNR requires input and reference frame counts to match"
-                    )
+                    frame_counts_match = False
+                    break
 
                 input_video_frame     = cast(av.VideoFrame, input_frame)
                 reference_video_frame = cast(av.VideoFrame, reference_frame)
@@ -182,7 +193,7 @@ class PsnrMetric(Metric):
                     target_format,
                 )
                 minimum   = min(minimum, frame_psnr)
-                frame_count += 1
+                compared_frames += 1
         except MetricError:
             raise
         except (ValueError, av.FFmpegError) as error:
@@ -190,7 +201,18 @@ class PsnrMetric(Metric):
         except MediaError as error:
             raise MetricError(str(error)) from error
 
-        if frame_count == 0:
+        if (
+            not frame_counts_match
+            or (
+                frame_limit is not None
+                and compared_frames < frame_limit
+            )
+        ):
+            raise MetricError(
+                "PSNR requires input and reference frame counts to match"
+            )
+
+        if compared_frames == 0:
             raise MetricError("PSNR requires at least one decoded frame")
 
         if math.isinf(minimum):

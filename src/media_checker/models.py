@@ -65,7 +65,6 @@ class VideoMetadata:
 class MetricResult:
     status : str
     value  : Optional[Any] = None
-    error  : Optional[str] = None
 
     @classmethod
     def success(cls, value: Any) -> "MetricResult":
@@ -73,18 +72,12 @@ class MetricResult:
 
     @classmethod
     def failure(cls, message: str) -> "MetricResult":
-        return cls(status = STATUS_ERROR, error = message)
+        return cls(status = STATUS_ERROR, value = message)
 
     def to_dict(self) -> Dict[str, Any]:
-        if self.status == STATUS_SUCCESS:
-            return {
-                "status" : self.status,
-                "value"  : self.value,
-            }
-
         return {
             "status" : self.status,
-            "error"  : self.error,
+            "value"  : self.value,
         }
 
 

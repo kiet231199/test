@@ -13,6 +13,9 @@ from media_checker.models import (
 )
 
 
+UNSUPPORTED_METRICS_MESSAGE = "Unsupported metrics"
+
+
 def normalize_metrics(metric_names: Iterable[str]) -> Tuple[str, ...]:
     """Validate metric names and remove duplicates without reordering them."""
 
@@ -42,13 +45,24 @@ def check(request: CheckRequest) -> CheckResult:
         reference_source = create_video_source(request.reference)
 
     context = MetricContext(
-        input_source     = input_source,
-        reference_source = reference_source,
+        input_source      = input_source,
+        reference_source  = reference_source,
+        input_frame_limit = (
+            request.input.frame_count
+            if request.input.is_raw
+            else None
+        ),
     )
     results = {}
 
     for metric_name in metric_names:
         handler = METRIC_HANDLERS[metric_name]
+
+        if not handler.supports(context):
+            results[metric_name] = MetricResult.failure(
+                UNSUPPORTED_METRICS_MESSAGE
+            )
+            continue
 
         try:
             value = handler.calculate(context)

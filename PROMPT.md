@@ -61,6 +61,8 @@ media-check --input <descriptor> --check <metric> [<metric> ...]
 - `--output` / `-o` defaults to `metrics-result.yaml`.
 - Supported metrics are `width`, `height`, `framerate`, `level`, `profile`,
   and `psnr`.
+- Raw input supports only `psnr`; each other recognized metric returns an
+  independent `Unsupported metrics` metric error.
 - Duplicate metric names are removed while preserving request order.
 - The removed `--reference` / `-r` option is an argument error.
 - Help lists every metric, capitalizes headings and messages, and formats option
@@ -119,7 +121,8 @@ video produces a media error.
 Recognized raw fields may be present for encoded media, but encoded metadata
 is read from the stream and those fields are ignored.
 
-Raw `.raw` and `.yuv` media sections require every field below:
+Raw `.raw` and `.yuv` media sections require `path`, `width`, `height`, and
+`format`. The other fields below are optional:
 
 ```yaml
 input:
@@ -134,10 +137,16 @@ input:
 ```
 
 - Supported raw formats: `NV12`, `YUY2`, `RGB16`, `RGB`, `RGBA`, and `GRAY8`.
-- `framerate` must be a positive, canonical numerator/denominator string.
-- Dimensions, frame count, stride, and slice height must be positive integers.
+- When supplied, `framerate` must be a positive, canonical
+  numerator/denominator string.
+- Dimensions and supplied frame count, stride, and slice height values must be
+  positive integers.
+- Missing `stride` uses the format's tightly packed visible row size. Missing
+  `sliceheight` uses the visible height.
 - Raw dimensions and storage geometry must satisfy format alignment rules.
-- Raw file size must exactly match the descriptor geometry and frame count.
+- Raw file size must contain only complete frames for the effective storage
+  geometry. A supplied frame count must not exceed the available complete
+  frames.
 
 Environment variable rules:
 
@@ -154,12 +163,16 @@ Environment variable rules:
 
 # Metric behavior
 
-- Metadata metrics return stream metadata for encoded media and descriptor
-  metadata for raw media.
-- `level` and `profile` return metric errors for raw media.
+- Metadata metrics return stream metadata for encoded media. Raw input supports
+  only PSNR; every other recognized metric returns `Unsupported metrics`.
 - PSNR compares visible pixels after removing raw stride and slice-height
   padding.
-- PSNR requires matching resolutions and frame counts.
+- PSNR requires matching resolutions.
+- A supplied raw `input.frame_count` limits PSNR to that many frames. Both
+  sources must provide at least that many frames, and additional frames are
+  ignored.
+- Without raw `input.frame_count`, PSNR compares every frame and requires input
+  and reference frame counts to match.
 - Two encoded inputs must provide equal framerates. A raw-media framerate
   mismatch does not by itself block PSNR.
 - PSNR is the minimum value across all compared frames, rounded to six decimal
@@ -182,12 +195,13 @@ metrics:
     value: 224
   psnr:
     status: error
-    error: PSNR requires a reference descriptor
+    value: PSNR requires a reference descriptor
 ```
 
 The overall status is `success`, `partial`, or `failed`. A request-level
 configuration failure uses `status: failed`, a top-level `error`, and an empty
-`metrics` mapping.
+`metrics` mapping. Metric failures use `value`, not `error`, because their
+status is `error`.
 
 # Development workflow
 
@@ -257,4 +271,3 @@ future features.
 input/output examples, validation rules, compatibility constraints, and any
 result-schema changes. After every update, keep README.md and PROMPT.md aligned
 with the latest implementation. -->
-

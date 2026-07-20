@@ -27,17 +27,23 @@ class TtyStringIO(io.StringIO):
         return True
 
 
-def _raw_document():
+def _raw_document(path: str = "input.raw"):
     return "\n".join([
         "input:",
-        "  path: input.raw",
+        "  path: {}".format(path),
         "  width: 4",
         "  height: 2",
-        '  framerate: "24/1"',
         "  format: GRAY8",
-        "  frame_count: 1",
-        "  stride: 4",
-        "  sliceheight: 2",
+    ])
+
+
+def _raw_pair_document():
+    return _raw_document() + "\n" + "\n".join([
+        "reference:",
+        "  path: reference.raw",
+        "  width: 4",
+        "  height: 2",
+        "  format: GRAY8",
     ])
 
 
@@ -46,28 +52,30 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / "input.raw").write_bytes(bytes(8))
+            (root / "reference.raw").write_bytes(bytes(8))
             descriptor = root / "input.yaml"
-            descriptor.write_text(_raw_document(), encoding = "utf-8")
+            descriptor.write_text(_raw_pair_document(), encoding = "utf-8")
             output = root / "result.yaml"
 
             exit_status = run([
                 "-i", str(descriptor),
-                "-c", "width", "height", "width",
+                "-c", "psnr", "psnr",
                 "-o", str(output),
             ])
             result = yaml.safe_load(output.read_text(encoding = "utf-8"))
 
             self.assertEqual(exit_status, EXIT_SUCCESS)
             self.assertEqual(result["status"], "success")
-            self.assertEqual(list(result["metrics"]), ["width", "height"])
+            self.assertEqual(list(result["metrics"]), ["psnr"])
             self.assertNotIn("schema_version", result)
 
     def test_cli_uses_default_output_and_reports_partial_result(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / "input.raw").write_bytes(bytes(8))
+            (root / "reference.raw").write_bytes(bytes(8))
             descriptor = root / "input.yaml"
-            descriptor.write_text(_raw_document(), encoding = "utf-8")
+            descriptor.write_text(_raw_pair_document(), encoding = "utf-8")
             previous_directory = Path.cwd()
 
             try:
@@ -84,9 +92,13 @@ class CliTests(unittest.TestCase):
 
             self.assertEqual(exit_status, EXIT_METRIC_FAILED)
             self.assertEqual(result["status"], "partial")
-            self.assertEqual(result["metrics"]["psnr"]["status"], "error")
-            self.assertIsInstance(result["metrics"]["psnr"]["error"], str)
-            self.assertNotIn("code", result["metrics"]["psnr"])
+            self.assertEqual(result["metrics"]["width"]["status"], "error")
+            self.assertEqual(
+                result["metrics"]["width"]["value"],
+                "Unsupported metrics",
+            )
+            self.assertEqual(result["metrics"]["psnr"]["value"], 1000.0)
+            self.assertNotIn("error", result["metrics"]["width"])
 
     def test_cli_loads_reference_from_the_input_document(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -95,17 +107,7 @@ class CliTests(unittest.TestCase):
             (root / "reference.raw").write_bytes(bytes(8))
             descriptor = root / "input.yaml"
             descriptor.write_text(
-                _raw_document() + "\n" + "\n".join([
-                    "reference:",
-                    "  path: reference.raw",
-                    "  width: 4",
-                    "  height: 2",
-                    '  framerate: "24/1"',
-                    "  format: GRAY8",
-                    "  frame_count: 1",
-                    "  stride: 4",
-                    "  sliceheight: 2",
-                ]),
+                _raw_pair_document(),
                 encoding = "utf-8",
             )
             output = root / "result.yaml"
@@ -119,6 +121,26 @@ class CliTests(unittest.TestCase):
 
             self.assertEqual(exit_status, EXIT_SUCCESS)
             self.assertEqual(result["metrics"]["psnr"]["value"], 1000.0)
+
+    def test_metric_error_is_written_in_the_value_field(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "input.raw").write_bytes(bytes(8))
+            descriptor = root / "input.yaml"
+            descriptor.write_text(_raw_document(), encoding = "utf-8")
+            output = root / "result.yaml"
+
+            exit_status = run([
+                "--input", str(descriptor),
+                "--check", "psnr",
+                "--output", str(output),
+            ])
+            result = yaml.safe_load(output.read_text(encoding = "utf-8"))
+
+            self.assertEqual(exit_status, EXIT_METRIC_FAILED)
+            self.assertEqual(result["metrics"]["psnr"]["status"], "error")
+            self.assertIsInstance(result["metrics"]["psnr"]["value"], str)
+            self.assertNotIn("error", result["metrics"]["psnr"])
 
     def test_configuration_error_has_no_schema_version_or_error_code(self):
         with tempfile.TemporaryDirectory() as folder:

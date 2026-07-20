@@ -56,14 +56,22 @@ is not supported.
 Encoded H.264/H.265 elementary streams and `.mp4` containers need only a path.
 MP4 input uses the first H.264 or H.265 video stream; audio and other stream
 formats are ignored. An MP4 file without H.264 or H.265 video is a media error.
-Raw `.raw` and `.yuv` media require `path`, `width`, `height`, `framerate`,
-`format`, `frame_count`, `stride`, and `sliceheight`.
+Raw `.raw` and `.yuv` media require `path`, `width`, `height`, and `format`.
+`framerate`, `frame_count`, `stride`, and `sliceheight` are optional.
 
 Supported media extensions are `.raw`, `.yuv`, `.264`, `.265`, and `.mp4`.
 
 Supported raw formats are `NV12`, `YUY2`, `RGB16`, `RGB`, `RGBA`, and `GRAY8`.
 `stride` is the first plane's stored bytes per row, and `sliceheight` is the
-first plane's stored row count. Raw file size must exactly match this geometry.
+first plane's stored row count. When omitted, they default to tightly packed
+rows and the visible height. Supplied padding is removed before PSNR is
+calculated.
+
+A raw file must contain only complete frames for its effective storage
+geometry. When `input.frame_count` is supplied, PSNR compares that many frames
+and ignores additional frames. Without it, PSNR compares every frame and reports
+an error when the input and reference frame counts differ. Raw framerate is not
+needed for PSNR.
 
 Absolute media paths are recommended. Relative paths are resolved from the
 directory containing the YAML descriptor.
@@ -87,7 +95,7 @@ env:
 input:
   path: ${INPUT_FILE}
   frame_count: ${FRAME_COUNT}
-  # Other required raw fields are omitted from this short example.
+  # The required width, height, and format are omitted from this short example.
 ```
 
 A full replacement keeps its scalar type or is converted to the field's
@@ -113,6 +121,10 @@ media-check \
 metrics. `--output/-o` defaults to `metrics-result.yaml` in the current
 directory. Run `media-check --help` to see every supported metric.
 
+Raw input supports only `psnr`. Each other recognized metric produces an
+independent error with the value `Unsupported metrics`; this does not prevent a
+requested PSNR check from running.
+
 The removed `--reference/-r` option is an argument error. Argument errors print
 the complete help and exit with status `2`.
 
@@ -129,8 +141,11 @@ metrics:
     value: 224
   psnr:
     status: error
-    error: PSNR requires a reference descriptor
+    value: PSNR requires a reference descriptor
 ```
+
+Metric errors use the `value` field. Request, descriptor, and output
+configuration failures retain a top-level `error` field.
 
 Exit status `0` means every metric succeeded, `1` means at least one metric
 failed, and `2` means the command or descriptor configuration was invalid.

@@ -108,14 +108,54 @@ class RawMetricTests(unittest.TestCase):
             result = check(CheckRequest(
                 input     = input_descriptor,
                 reference = reference_descriptor,
-                metrics   = ("width", "height", "framerate", "psnr"),
+                metrics   = ("psnr",),
             ))
 
             self.assertEqual(result.status, STATUS_SUCCESS)
-            self.assertEqual(result.metrics["width"].value, 4)
-            self.assertEqual(result.metrics["height"].value, 2)
-            self.assertEqual(result.metrics["framerate"].value, "24/1")
             self.assertEqual(result.metrics["psnr"].value, 1000.0)
+
+    def test_optional_padding_dimensions_are_applied_independently(self):
+        cases = (
+            (
+                "stride",
+                {"stride" : 6, "sliceheight" : None},
+                bytes((1, 2, 3, 4, 99, 99, 5, 6, 7, 8, 99, 99)),
+            ),
+            (
+                "sliceheight",
+                {"stride" : None, "sliceheight" : 4},
+                bytes((1, 2, 3, 4, 5, 6, 7, 8) + (99,) * 8),
+            ),
+        )
+
+        for name, storage, input_data in cases:
+            with self.subTest(padding = name):
+                with tempfile.TemporaryDirectory() as folder:
+                    root = Path(folder)
+                    input_descriptor = raw_descriptor(
+                        root / "input.raw",
+                        "GRAY8",
+                        stride      = storage["stride"],
+                        sliceheight = storage["sliceheight"],
+                    )
+                    reference_descriptor = raw_descriptor(
+                        root / "reference.raw",
+                        "GRAY8",
+                        stride      = None,
+                        sliceheight = None,
+                    )
+                    input_descriptor.path.write_bytes(input_data)
+                    reference_descriptor.path.write_bytes(
+                        bytes((1, 2, 3, 4, 5, 6, 7, 8))
+                    )
+
+                    result = check(CheckRequest(
+                        input     = input_descriptor,
+                        reference = reference_descriptor,
+                        metrics   = ("psnr",),
+                    ))
+
+                    self.assertEqual(result.metrics["psnr"].value, 1000.0)
 
     def test_psnr_returns_six_decimal_minimum(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -142,7 +182,7 @@ class RawMetricTests(unittest.TestCase):
             expected = round(10.0 * math.log10(255.0 ** 2), 6)
             self.assertEqual(result.metrics["psnr"].value, expected)
 
-    def test_missing_reference_keeps_other_metric_results(self):
+    def test_missing_reference_is_a_metric_error(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             descriptor = raw_descriptor(root / "input.raw", "GRAY8", stride = 4)
@@ -151,13 +191,30 @@ class RawMetricTests(unittest.TestCase):
             result = check(CheckRequest(
                 input     = descriptor,
                 reference = None,
+                metrics   = ("psnr",),
+            ))
+
+            self.assertEqual(result.status, STATUS_FAILED)
+            self.assertEqual(result.metrics["psnr"].status, STATUS_ERROR)
+            self.assertIn("reference", result.metrics["psnr"].value)
+            self.assertNotIn("code", result.metrics["psnr"].to_dict())
+
+    def test_raw_input_rejects_non_psnr_metrics_independently(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            descriptor = raw_descriptor(root / "input.raw", "GRAY8", stride = 4)
+            write_raw_frames(descriptor, [bytes(8)])
+
+            result = check(CheckRequest(
+                input     = descriptor,
+                reference = descriptor,
                 metrics   = ("width", "psnr"),
             ))
 
             self.assertEqual(result.status, STATUS_PARTIAL)
-            self.assertEqual(result.metrics["width"].status, STATUS_SUCCESS)
-            self.assertEqual(result.metrics["psnr"].status, STATUS_ERROR)
-            self.assertNotIn("code", result.metrics["psnr"].to_dict())
+            self.assertEqual(result.metrics["width"].status, STATUS_ERROR)
+            self.assertEqual(result.metrics["width"].value, "Unsupported metrics")
+            self.assertEqual(result.metrics["psnr"].value, 1000.0)
 
     def test_raw_level_and_profile_are_metric_errors(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -174,6 +231,8 @@ class RawMetricTests(unittest.TestCase):
             self.assertEqual(result.status, STATUS_FAILED)
             self.assertEqual(result.metrics["level"].status, STATUS_ERROR)
             self.assertEqual(result.metrics["profile"].status, STATUS_ERROR)
+            self.assertEqual(result.metrics["level"].value, "Unsupported metrics")
+            self.assertEqual(result.metrics["profile"].value, "Unsupported metrics")
 
     def test_psnr_rejects_frame_count_and_resolution_mismatches(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -211,8 +270,8 @@ class RawMetricTests(unittest.TestCase):
                 metrics   = ("psnr",),
             ))
 
-            self.assertIn("frame counts", frame_result.metrics["psnr"].error)
-            self.assertIn("resolutions", size_result.metrics["psnr"].error)
+            self.assertIn("frame counts", frame_result.metrics["psnr"].value)
+            self.assertIn("resolutions", size_result.metrics["psnr"].value)
 
     def test_raw_framerate_mismatch_does_not_block_psnr(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -231,6 +290,73 @@ class RawMetricTests(unittest.TestCase):
             )
             write_raw_frames(input_descriptor, [bytes(8)])
             write_raw_frames(reference_descriptor, [bytes(8)])
+
+            result = check(CheckRequest(
+                input     = input_descriptor,
+                reference = reference_descriptor,
+                metrics   = ("psnr",),
+            ))
+
+            self.assertEqual(result.metrics["psnr"].value, 1000.0)
+
+    def test_missing_raw_frame_count_compares_every_complete_frame(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            input_descriptor = raw_descriptor(
+                root / "input.raw",
+                "GRAY8",
+                framerate   = None,
+                frame_count = None,
+                stride      = None,
+                sliceheight = None,
+            )
+            reference_descriptor = raw_descriptor(
+                root / "reference.raw",
+                "GRAY8",
+                framerate   = None,
+                frame_count = None,
+                stride      = None,
+                sliceheight = None,
+            )
+            write_raw_frames(input_descriptor, [bytes(8), bytes([20] * 8)])
+            write_raw_frames(reference_descriptor, [bytes(8), bytes([20] * 8)])
+
+            result = check(CheckRequest(
+                input     = input_descriptor,
+                reference = reference_descriptor,
+                metrics   = ("psnr",),
+            ))
+
+            self.assertEqual(result.metrics["psnr"].value, 1000.0)
+
+            reference_descriptor.path.write_bytes(bytes(8))
+            mismatch = check(CheckRequest(
+                input     = input_descriptor,
+                reference = reference_descriptor,
+                metrics   = ("psnr",),
+            ))
+
+            self.assertIn("frame counts", mismatch.metrics["psnr"].value)
+
+    def test_input_frame_count_limits_psnr_to_the_requested_prefix(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            input_descriptor = raw_descriptor(
+                root / "input.raw",
+                "GRAY8",
+                frame_count = 1,
+                stride = None,
+                sliceheight = None,
+            )
+            reference_descriptor = raw_descriptor(
+                root / "reference.raw",
+                "GRAY8",
+                frame_count = None,
+                stride = None,
+                sliceheight = None,
+            )
+            write_raw_frames(input_descriptor, [bytes(8), bytes([10] * 8)])
+            write_raw_frames(reference_descriptor, [bytes(8), bytes([200] * 8)])
 
             result = check(CheckRequest(
                 input     = input_descriptor,
@@ -356,7 +482,7 @@ class EncodedMediaTests(unittest.TestCase):
             ))
 
             self.assertEqual(equal_result.metrics["psnr"].value, 1000.0)
-            self.assertIn("framerates", rate_result.metrics["psnr"].error)
+            self.assertIn("framerates", rate_result.metrics["psnr"].value)
 
     def test_encoded_input_can_compare_with_raw_reference(self):
         with tempfile.TemporaryDirectory() as folder:
