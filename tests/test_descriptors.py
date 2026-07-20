@@ -22,6 +22,18 @@ def _raw_lines(path: str = "input.yuv"):
     ]
 
 
+def _minimal_raw_lines(
+    path: str = "input.yuv",
+    raw_format: str = "NV12",
+):
+    return [
+        "  path: {}".format(path),
+        "  width: 4",
+        "  height: 2",
+        "  format: {}".format(raw_format),
+    ]
+
+
 class DescriptorTests(unittest.TestCase):
     def test_load_raw_descriptor_resolves_relative_path(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -44,6 +56,34 @@ class DescriptorTests(unittest.TestCase):
             self.assertEqual(descriptor.format, "NV12")
             self.assertEqual(str(descriptor.framerate), "24")
             self.assertIsNone(descriptor_set.reference)
+
+    def test_minimal_raw_descriptor_infers_tight_storage(self):
+        for name, raw_format in RAW_FORMATS.items():
+            with self.subTest(raw_format = name):
+                with tempfile.TemporaryDirectory() as folder:
+                    root       = Path(folder)
+                    media_path = root / "input.raw"
+                    luma_size  = 4 * raw_format.bytes_per_pixel * 2
+                    frame_size = (
+                        luma_size
+                        * raw_format.stored_height_numerator
+                        // raw_format.stored_height_denominator
+                    )
+                    media_path.write_bytes(bytes(frame_size * 2))
+                    descriptor_path = root / "input.yaml"
+                    descriptor_path.write_text(
+                        "\n".join([
+                            "input:",
+                        ] + _minimal_raw_lines("input.raw", name)),
+                        encoding = "utf-8",
+                    )
+
+                    descriptor = load_descriptor(descriptor_path).input
+
+                    self.assertIsNone(descriptor.framerate)
+                    self.assertIsNone(descriptor.frame_count)
+                    self.assertIsNone(descriptor.stride)
+                    self.assertIsNone(descriptor.sliceheight)
 
     def test_old_flat_descriptor_is_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -193,6 +233,10 @@ class DescriptorTests(unittest.TestCase):
         cases = {
             "missing raw field" : None,
             "noncanonical rate" : '  framerate: "48/2"',
+            "null rate" : "  framerate: null",
+            "null frame count" : "  frame_count: null",
+            "null stride" : "  stride: null",
+            "null sliceheight" : "  sliceheight: null",
             "short stride" : "  stride: 2",
             "short sliceheight" : "  sliceheight: 1",
         }
@@ -205,7 +249,7 @@ class DescriptorTests(unittest.TestCase):
                     lines = ["input:"] + _raw_lines()
 
                     if name == "missing raw field":
-                        lines.remove("  frame_count: 1")
+                        lines.remove("  width: 4")
                     else:
                         if replacement is None:
                             raise AssertionError("Replacement is required for this case")
@@ -221,7 +265,45 @@ class DescriptorTests(unittest.TestCase):
                     with self.assertRaises(ConfigurationError):
                         load_descriptor(descriptor_path)
 
-    def test_raw_file_size_must_match_frame_count(self):
+    def test_explicit_frame_count_allows_additional_complete_frames(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "input.yuv").write_bytes(bytes(24))
+            descriptor_path = root / "input.yaml"
+            descriptor_path.write_text(
+                "\n".join(["input:"] + _raw_lines()),
+                encoding = "utf-8",
+            )
+
+            descriptor = load_descriptor(descriptor_path).input
+
+            self.assertEqual(descriptor.frame_count, 1)
+
+    def test_raw_file_must_contain_declared_complete_frames(self):
+        cases = (
+            (12, 2),
+            (13, 1),
+        )
+
+        for file_size, frame_count in cases:
+            with self.subTest(file_size = file_size, frame_count = frame_count):
+                with tempfile.TemporaryDirectory() as folder:
+                    root = Path(folder)
+                    (root / "input.yuv").write_bytes(bytes(file_size))
+                    lines = ["input:"] + _raw_lines()
+                    lines = [
+                        "  frame_count: {}".format(frame_count)
+                        if line == "  frame_count: 1"
+                        else line
+                        for line in lines
+                    ]
+                    descriptor_path = root / "input.yaml"
+                    descriptor_path.write_text("\n".join(lines), encoding = "utf-8")
+
+                    with self.assertRaisesRegex(ConfigurationError, "file size"):
+                        load_descriptor(descriptor_path)
+
+    def test_raw_file_size_must_contain_only_complete_frames(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / "input.yuv").write_bytes(bytes(11))

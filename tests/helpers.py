@@ -1,6 +1,6 @@
 from fractions import Fraction
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 import av
 import numpy as np
@@ -14,10 +14,10 @@ def raw_descriptor(
     raw_format: str = "NV12",
     width: int = 4,
     height: int = 2,
-    framerate: Fraction = Fraction(24, 1),
-    frame_count: int = 1,
-    stride: int = 4,
-    sliceheight: int = 2,
+    framerate: Optional[Fraction] = Fraction(24, 1),
+    frame_count: Optional[int] = 1,
+    stride: Optional[int] = 4,
+    sliceheight: Optional[int] = 2,
 ) -> MediaDescriptor:
     return MediaDescriptor(
         path        = path,

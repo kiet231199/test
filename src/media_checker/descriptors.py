@@ -29,15 +29,20 @@ INPUT_FIELD     = "input"
 REFERENCE_FIELD = "reference"
 PATH_FIELD      = "path"
 
-RAW_FIELDS = (
+RAW_REQUIRED_FIELDS = (
     "width",
     "height",
-    "framerate",
     "format",
+)
+
+RAW_OPTIONAL_FIELDS = (
+    "framerate",
     "frame_count",
     "stride",
     "sliceheight",
 )
+
+RAW_FIELDS = RAW_REQUIRED_FIELDS + RAW_OPTIONAL_FIELDS
 
 INTEGER_FIELDS = frozenset((
     "width",
@@ -330,7 +335,11 @@ def _raw_descriptor(
     environment: Mapping[str, _EnvironmentValue],
     section_name: str,
 ) -> MediaDescriptor:
-    missing_fields = [field for field in RAW_FIELDS if field not in values]
+    missing_fields = [
+        field
+        for field in RAW_REQUIRED_FIELDS
+        if field not in values
+    ]
 
     if missing_fields:
         raise ConfigurationError(
@@ -342,6 +351,7 @@ def _raw_descriptor(
     expanded_values = {
         field : _field_value(values[field], field, environment, section_name)
         for field in RAW_FIELDS
+        if field in values
     }
     raw_format = expanded_values["format"]
 
@@ -359,15 +369,18 @@ def _raw_descriptor(
         extension   = extension,
         width       = _positive_integer(expanded_values["width"], "width"),
         height      = _positive_integer(expanded_values["height"], "height"),
-        framerate   = _framerate(expanded_values["framerate"]),
+        framerate   = _optional_framerate(expanded_values),
         format      = raw_format,
-        frame_count = _positive_integer(
-            expanded_values["frame_count"],
+        frame_count = _optional_positive_integer(
+            expanded_values,
             "frame_count",
         ),
-        stride      = _positive_integer(expanded_values["stride"], "stride"),
-        sliceheight = _positive_integer(
-            expanded_values["sliceheight"],
+        stride      = _optional_positive_integer(
+            expanded_values,
+            "stride",
+        ),
+        sliceheight = _optional_positive_integer(
+            expanded_values,
             "sliceheight",
         ),
     )
@@ -380,6 +393,16 @@ def _positive_integer(value: Any, field_name: str) -> int:
         )
 
     return value
+
+
+def _optional_positive_integer(
+    values: Mapping[str, Any],
+    field_name: str,
+) -> Optional[int]:
+    if field_name not in values:
+        return None
+
+    return _positive_integer(values[field_name], field_name)
 
 
 def _framerate(value: Any) -> Fraction:
@@ -405,3 +428,12 @@ def _framerate(value: Any) -> Fraction:
         raise ConfigurationError("Raw descriptor framerate must be canonical")
 
     return Fraction(numerator, denominator)
+
+
+def _optional_framerate(
+    values: Mapping[str, Any],
+) -> Optional[Fraction]:
+    if "framerate" not in values:
+        return None
+
+    return _framerate(values["framerate"])

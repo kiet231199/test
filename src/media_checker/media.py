@@ -32,6 +32,14 @@ class SourcePlane:
 
 
 @dataclass(frozen = True)
+class RawLayout:
+    width       : int
+    height      : int
+    stride      : int
+    sliceheight : int
+
+
+@dataclass(frozen = True)
 class RawFormat:
     """Stored plane geometry and comparison format for one raw layout."""
 
@@ -50,16 +58,29 @@ class RawFormat:
         return self.chroma_height_divisor is not None
 
     def validate(self, descriptor: MediaDescriptor) -> None:
-        width       = _required(descriptor.width, "width")
-        height      = _required(descriptor.height, "height")
-        frame_count = _required(descriptor.frame_count, "frame_count")
-        stride      = _required(descriptor.stride, "stride")
-        sliceheight = _required(descriptor.sliceheight, "sliceheight")
+        self.layout(descriptor)
+
+        if descriptor.frame_count is not None and descriptor.frame_count <= 0:
+            raise ConfigurationError("Raw frame_count must be a positive integer")
+
+        if descriptor.framerate is not None and descriptor.framerate <= 0:
+            raise ConfigurationError("Raw framerate must be positive")
+
+    def layout(self, descriptor: MediaDescriptor) -> RawLayout:
+        width  = _required(descriptor.width, "width")
+        height = _required(descriptor.height, "height")
+        stride = descriptor.stride
+        sliceheight = descriptor.sliceheight
+
+        if stride is None:
+            stride = width * self.bytes_per_pixel
+
+        if sliceheight is None:
+            sliceheight = height
 
         numeric_fields = {
             "width"       : width,
             "height"      : height,
-            "frame_count" : frame_count,
             "stride"      : stride,
             "sliceheight" : sliceheight,
         }
@@ -69,9 +90,6 @@ class RawFormat:
                 raise ConfigurationError(
                     "Raw {} must be a positive integer".format(field_name)
                 )
-
-        if descriptor.framerate is None or descriptor.framerate <= 0:
-            raise ConfigurationError("Raw framerate must be positive")
 
         if width % self.width_alignment != 0:
             raise ConfigurationError(
@@ -118,23 +136,27 @@ class RawFormat:
                 )
             )
 
+        return RawLayout(
+            width       = width,
+            height      = height,
+            stride      = stride,
+            sliceheight = sliceheight,
+        )
+
     def source_planes(self, descriptor: MediaDescriptor) -> List[SourcePlane]:
-        width       = _required(descriptor.width, "width")
-        height      = _required(descriptor.height, "height")
-        stride      = _required(descriptor.stride, "stride")
-        sliceheight = _required(descriptor.sliceheight, "sliceheight")
+        layout = self.layout(descriptor)
 
         if not self.has_chroma_plane:
             return [
                 SourcePlane(
                     offset            = 0,
-                    stride            = stride,
-                    visible_row_bytes = width * self.bytes_per_pixel,
-                    visible_rows      = height,
+                    stride            = layout.stride,
+                    visible_row_bytes = layout.width * self.bytes_per_pixel,
+                    visible_rows      = layout.height,
                 )
             ]
 
-        luma_size = stride * sliceheight
+        luma_size = layout.stride * layout.sliceheight
         chroma_height_divisor = self.chroma_height_divisor
 
         if chroma_height_divisor is None:
@@ -145,23 +167,22 @@ class RawFormat:
         return [
             SourcePlane(
                 offset            = 0,
-                stride            = stride,
-                visible_row_bytes = width,
-                visible_rows      = height,
+                stride            = layout.stride,
+                visible_row_bytes = layout.width,
+                visible_rows      = layout.height,
             ),
             SourcePlane(
                 offset            = luma_size,
-                stride            = stride,
-                visible_row_bytes = width,
-                visible_rows      = height // chroma_height_divisor,
+                stride            = layout.stride,
+                visible_row_bytes = layout.width,
+                visible_rows      = layout.height // chroma_height_divisor,
             ),
         ]
 
     def frame_size(self, descriptor: MediaDescriptor) -> int:
-        stride      = _required(descriptor.stride, "stride")
-        sliceheight = _required(descriptor.sliceheight, "sliceheight")
+        layout = self.layout(descriptor)
 
-        stored_luma_size = stride * sliceheight
+        stored_luma_size = layout.stride * layout.sliceheight
         return (
             stored_luma_size
             * self.stored_height_numerator
@@ -223,7 +244,7 @@ def _required(value: Optional[int], field_name: str) -> int:
 
 
 def validate_raw_file(descriptor: MediaDescriptor) -> None:
-    """Validate raw geometry and exact stored file size."""
+    """Validate raw geometry and complete stored frames."""
 
     raw_format = RAW_FORMATS.get(descriptor.format or "")
 
@@ -234,15 +255,26 @@ def validate_raw_file(descriptor: MediaDescriptor) -> None:
 
     raw_format.validate(descriptor)
 
-    frame_count = _required(descriptor.frame_count, "frame_count")
-    expected_size = raw_format.frame_size(descriptor) * frame_count
-    actual_size   = descriptor.path.stat().st_size
+    frame_size  = raw_format.frame_size(descriptor)
+    actual_size = descriptor.path.stat().st_size
 
-    if actual_size != expected_size:
+    if actual_size % frame_size != 0:
         raise ConfigurationError(
-            "Raw file size is {} bytes; expected {} bytes from its descriptor".format(
+            "Raw file size is {} bytes; expected a whole number of {}-byte frames".format(
                 actual_size,
-                expected_size,
+                frame_size,
+            )
+        )
+
+    available_frames = actual_size // frame_size
+    frame_count      = descriptor.frame_count
+
+    if frame_count is not None and available_frames < frame_count:
+        raise ConfigurationError(
+            "Raw file size is {} bytes; expected at least {} frames of {} bytes".format(
+                actual_size,
+                frame_count,
+                frame_size,
             )
         )
 
@@ -284,25 +316,33 @@ class RawVideoSource(VideoSource):
     def frames(self) -> Iterator[av.VideoFrame]:
         width       = _required(self.descriptor.width, "width")
         height      = _required(self.descriptor.height, "height")
-        frame_count = _required(self.descriptor.frame_count, "frame_count")
         frame_size  = self.raw_format.frame_size(self.descriptor)
         time_base   = _time_base(self.descriptor.framerate)
 
         try:
             with self.descriptor.path.open("rb") as media_file:
-                for frame_index in range(frame_count):
+                frame_index = 0
+
+                while True:
                     data = media_file.read(frame_size)
+
+                    if not data:
+                        break
 
                     if len(data) != frame_size:
                         raise MediaError(
                             "Raw file ended while reading frame {}".format(frame_index)
                         )
 
-                    frame           = av.VideoFrame(width, height, self.raw_format.av_format)
-                    frame.pts       = frame_index
-                    frame.time_base = time_base
+                    frame     = av.VideoFrame(width, height, self.raw_format.av_format)
+                    frame.pts = frame_index
+
+                    if time_base is not None:
+                        frame.time_base = time_base
+
                     self._copy_visible_planes(data, frame)
                     yield frame
+                    frame_index += 1
         except OSError as error:
             raise MediaError(
                 "Cannot read raw media '{}': {}".format(self.descriptor.path, error)
@@ -432,9 +472,9 @@ def _codec_name(context) -> Optional[str]:
     return str(codec_name).lower()
 
 
-def _time_base(framerate: Optional[Fraction]) -> Fraction:
+def _time_base(framerate: Optional[Fraction]) -> Optional[Fraction]:
     if framerate is None:
-        raise ConfigurationError("Raw descriptor is missing 'framerate'")
+        return None
 
     return Fraction(framerate.denominator, framerate.numerator)
 
