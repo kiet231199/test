@@ -155,7 +155,145 @@ class CodecTraceTests(unittest.TestCase):
         self.assertIsNone(_field_order("hevc", [[1], [10]]))
         self.assertIsNone(_field_order("hevc", [[1, 2], []]))
 
-class FrameAnalysisTests(unittest.TestCase):
+
+class EncodedMetricTests(unittest.TestCase):
+    def test_registry_exposes_all_new_metrics_with_expected_value_types(self):
+        descriptor = MediaDescriptor(
+            path       = Path("unused.265"),
+            media_type = ENCODED_MEDIA_TYPE,
+            extension  = ".265",
+        )
+        analysis = _EncodedAnalysis(
+            bitrate            = 123456,
+            gop                = 12,
+            interval_intraframe = 12,
+            pframes            = 3,
+            bframes            = 8,
+            refframes          = 4,
+            frame_count        = 30,
+            scan_type          = "progressive",
+            crop               = "0:2:0:2",
+        )
+        source = FakeAnalyzedSource(descriptor, "hevc", analysis)
+        metric_names = (
+            "codec",
+            "bitrate",
+            "gop",
+            "interval-intraframe",
+            "pframes",
+            "bframes",
+            "refframes",
+            "frame_count",
+            "scan_type",
+            "crop",
+        )
+
+        with patch(
+            "media_checker.checker.create_video_source",
+            return_value = source,
+        ):
+            result = check(CheckRequest(
+                input     = descriptor,
+                reference = None,
+                metrics   = metric_names,
+            ))
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.metrics["codec"].value, "h265")
+        self.assertEqual(result.metrics["bitrate"].value, 123456)
+        self.assertEqual(result.metrics["interval-intraframe"].value, 12)
+        self.assertEqual(result.metrics["crop"].value, "0:2:0:2")
+
+    def test_new_metrics_remain_unsupported_for_raw_input(self):
+        descriptor = MediaDescriptor(
+            path        = Path("unused.raw"),
+            media_type  = RAW_MEDIA_TYPE,
+            extension   = ".raw",
+            width       = 4,
+            height      = 2,
+            format      = "GRAY8",
+            frame_count = 1,
+            stride      = 4,
+            sliceheight = 2,
+        )
+        metrics = (
+            "codec",
+            "bitrate",
+            "gop",
+            "interval-intraframe",
+            "pframes",
+            "bframes",
+            "refframes",
+            "frame_count",
+            "scan_type",
+            "crop",
+        )
+
+        result = check(CheckRequest(
+            input     = descriptor,
+            reference = None,
+            metrics   = metrics,
+        ))
+
+        self.assertEqual(result.status, "failed")
+        self.assertTrue(all(
+            metric.value == "Unsupported metrics"
+            for metric in result.metrics.values()
+        ))
+
+    def test_real_h264_and_h265_streams_report_stream_analysis(self):
+        cases = (
+            ("sample.264", "libx264", "h264", "h264", "0:14:0:14"),
+            ("sample.265", "libx265", "hevc", "h265", "0:6:0:6"),
+        )
+
+        for (
+            file_name,
+            encoder,
+            container_format,
+            expected_codec,
+            expected_crop,
+        ) in cases:
+            with self.subTest(codec = expected_codec):
+                with tempfile.TemporaryDirectory() as folder:
+                    path = Path(folder) / file_name
+                    encode_elementary_video(
+                        path,
+                        encoder,
+                        container_format,
+                        frame_count = 10,
+                        width       = 18,
+                        height      = 18,
+                    )
+                    descriptor = MediaDescriptor(
+                        path       = path,
+                        media_type = ENCODED_MEDIA_TYPE,
+                        extension  = path.suffix,
+                    )
+
+                    result = check(CheckRequest(
+                        input     = descriptor,
+                        reference = None,
+                        metrics   = (
+                            "codec",
+                            "bitrate",
+                            "gop",
+                            "refframes",
+                            "frame_count",
+                            "scan_type",
+                            "crop",
+                        ),
+                    ))
+
+                    self.assertEqual(result.status, "success")
+                    self.assertEqual(result.metrics["codec"].value, expected_codec)
+                    self.assertGreater(result.metrics["bitrate"].value, 0)
+                    self.assertGreater(result.metrics["gop"].value, 0)
+                    self.assertGreaterEqual(result.metrics["refframes"].value, 0)
+                    self.assertEqual(result.metrics["frame_count"].value, 10)
+                    self.assertEqual(result.metrics["scan_type"].value, "progressive")
+                    self.assertEqual(result.metrics["crop"].value, expected_crop)
+
     def test_frame_summary_uses_longest_observed_i_picture_groups(self):
         summary = _summarize_frames(
             ["P", "I", "P", "B", "I", "B", "I", "P", "P"],
@@ -169,77 +307,210 @@ class FrameAnalysisTests(unittest.TestCase):
         self.assertEqual(summary.bframes, 1)
         self.assertEqual(summary.scan_mode, "progressive")
 
+    def test_h264_picture_timing_distinguishes_field_order(self):
+        cases = (
+            ("tff", "interlace_tff"),
+            ("bff", "interlace_bff"),
+        )
 
-class CodecAndBitrateMetricTests(unittest.TestCase):
-    def test_codec_and_bitrate_are_exposed(self):
+        for x264_order, expected in cases:
+            with self.subTest(order = x264_order):
+                with tempfile.TemporaryDirectory() as folder:
+                    path = Path(folder) / "sample.264"
+                    encode_elementary_video(
+                        path,
+                        "libx264",
+                        "h264",
+                        frame_count = 4,
+                        width       = 64,
+                        height      = 32,
+                        options     = {
+                            "x264-params" : (
+                                "interlaced=1:{}=1:keyint=20:"
+                                "min-keyint=20:scenecut=0"
+                            ).format(x264_order),
+                        },
+                        interlaced = True,
+                    )
+                    descriptor = MediaDescriptor(
+                        path       = path,
+                        media_type = ENCODED_MEDIA_TYPE,
+                        extension  = ".264",
+                    )
+
+                    result = check(CheckRequest(
+                        input     = descriptor,
+                        reference = None,
+                        metrics   = ("scan_type",),
+                    ))
+
+                    self.assertEqual(result.metrics["scan_type"].value, expected)
+
+    def test_h265_picture_timing_distinguishes_field_order(self):
+        cases = (
+            ("tff", "interlace_tff"),
+            ("bff", "interlace_bff"),
+        )
+
+        for x265_order, expected in cases:
+            with self.subTest(order = x265_order):
+                with tempfile.TemporaryDirectory() as folder:
+                    path = Path(folder) / "sample.265"
+                    encode_elementary_video(
+                        path,
+                        "libx265",
+                        "hevc",
+                        frame_count = 4,
+                        width       = 64,
+                        height      = 32,
+                        options     = {
+                            "x265-params" : (
+                                "interlace={}:keyint=20:min-keyint=20:scenecut=0"
+                            ).format(x265_order),
+                        },
+                        interlaced = True,
+                    )
+                    descriptor = MediaDescriptor(
+                        path       = path,
+                        media_type = ENCODED_MEDIA_TYPE,
+                        extension  = ".265",
+                    )
+
+                    result = check(CheckRequest(
+                        input     = descriptor,
+                        reference = None,
+                        metrics   = ("scan_type",),
+                    ))
+
+                    self.assertEqual(result.metrics["scan_type"].value, expected)
+
+    def test_interlaced_scan_requires_field_order_for_every_frame(self):
         descriptor = MediaDescriptor(
-            path       = Path("unused.265"),
+            path       = Path("unused.264"),
             media_type = ENCODED_MEDIA_TYPE,
-            extension  = ".265",
+            extension  = ".264",
         )
-        source = FakeAnalyzedSource(
-            descriptor,
-            "hevc",
-            _EncodedAnalysis(bitrate = 123456),
-        )
+        source = EncodedVideoSource(descriptor)
 
-        with patch(
-            "media_checker.checker.create_video_source",
-            return_value = source,
-        ):
-            result = check(CheckRequest(
-                input     = descriptor,
-                reference = None,
-                metrics   = ("codec", "bitrate"),
-            ))
-
-        self.assertEqual(result.status, "success")
-        self.assertEqual(result.metrics["codec"].value, "h265")
-        self.assertEqual(result.metrics["bitrate"].value, 123456)
-
-
-class FrameMetricTests(unittest.TestCase):
-    def test_gop_interval_picture_counts_and_frame_count_are_exposed(self):
-        descriptor = MediaDescriptor(
-            path       = Path("unused.265"),
-            media_type = ENCODED_MEDIA_TYPE,
-            extension  = ".265",
-        )
-        source = FakeAnalyzedSource(
-            descriptor,
-            "hevc",
-            _EncodedAnalysis(
-                gop                 = 12,
-                interval_intraframe = 12,
-                pframes             = 3,
-                bframes             = 8,
-                frame_count         = 30,
+        with patch.object(
+            source,
+            "_packet_summary",
+            return_value = _PacketSummary(
+                field_order       = "interlace_tff",
+                field_order_count = 1,
             ),
-        )
-        metrics = (
-            "gop",
-            "interval-intraframe",
-            "pframes",
-            "bframes",
-            "frame_count",
-        )
-
-        with patch(
-            "media_checker.checker.create_video_source",
-            return_value = source,
+        ), patch.object(
+            source,
+            "_frame_summary",
+            return_value = _FrameSummary(
+                frame_count = 2,
+                scan_mode   = "interlaced",
+            ),
         ):
+            analysis = source.analysis()
+
+        self.assertIsNone(analysis.scan_type)
+
+    def test_header_probe_restores_the_process_log_level(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "sample.264"
+            encode_elementary_video(path, "libx264", "h264", frame_count = 2)
+            descriptor = MediaDescriptor(
+                path       = path,
+                media_type = ENCODED_MEDIA_TYPE,
+                extension  = ".264",
+            )
+            previous_level = av.logging.get_level()
+
+            try:
+                av.logging.set_level(av.logging.WARNING)
+                EncodedVideoSource(descriptor).analysis()
+                self.assertEqual(av.logging.get_level(), av.logging.WARNING)
+            finally:
+                av.logging.set_level(previous_level)
+
+    def test_short_stream_keeps_gop_when_complete_interval_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "sample.264"
+            encode_elementary_video(path, "libx264", "h264", frame_count = 2)
+            descriptor = MediaDescriptor(
+                path       = path,
+                media_type = ENCODED_MEDIA_TYPE,
+                extension  = ".264",
+            )
+
             result = check(CheckRequest(
                 input     = descriptor,
                 reference = None,
-                metrics   = metrics,
+                metrics   = (
+                    "gop",
+                    "interval-intraframe",
+                    "pframes",
+                    "bframes",
+                ),
             ))
 
-        self.assertEqual(result.status, "success")
-        self.assertEqual(result.metrics["gop"].value, 12)
-        self.assertEqual(result.metrics["interval-intraframe"].value, 12)
-        self.assertEqual(result.metrics["pframes"].value, 3)
-        self.assertEqual(result.metrics["bframes"].value, 8)
-        self.assertEqual(result.metrics["frame_count"].value, 30)
+            self.assertEqual(result.status, "partial")
+            self.assertEqual(result.metrics["gop"].value, 2)
+            self.assertEqual(
+                result.metrics["interval-intraframe"].status,
+                "error",
+            )
+            self.assertEqual(result.metrics["pframes"].status, "error")
+            self.assertEqual(result.metrics["bframes"].status, "error")
+
+    def test_mp4_audio_does_not_change_selected_video_bitrate(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            values = []
+
+            for include_audio in (False, True):
+                path = root / "sample-{}.mp4".format(include_audio)
+                encode_container_video(
+                    path,
+                    "libx264",
+                    "mp4",
+                    frame_count   = 10,
+                    include_audio = include_audio,
+                )
+                descriptor = MediaDescriptor(
+                    path       = path,
+                    media_type = ENCODED_MEDIA_TYPE,
+                    extension  = ".mp4",
+                )
+                result = check(CheckRequest(
+                    input     = descriptor,
+                    reference = None,
+                    metrics   = ("bitrate",),
+                ))
+                values.append(result.metrics["bitrate"].value)
+
+            self.assertEqual(values[0], values[1])
+
+    def test_header_probe_failure_does_not_erase_frame_metrics(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "sample.264"
+            encode_elementary_video(path, "libx264", "h264", frame_count = 2)
+            descriptor = MediaDescriptor(
+                path       = path,
+                media_type = ENCODED_MEDIA_TYPE,
+                extension  = ".264",
+            )
+
+            with patch(
+                "media_checker.media.av.BitStreamFilterContext",
+                side_effect = ValueError("unavailable"),
+            ):
+                result = check(CheckRequest(
+                    input     = descriptor,
+                    reference = None,
+                    metrics   = ("frame_count", "crop", "refframes"),
+                ))
+
+            self.assertEqual(result.status, "partial")
+            self.assertEqual(result.metrics["frame_count"].value, 2)
+            self.assertEqual(result.metrics["crop"].status, "error")
+            self.assertEqual(result.metrics["refframes"].status, "error")
 
 
 if __name__ == "__main__":

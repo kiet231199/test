@@ -160,9 +160,24 @@ class BFramesMetric(EncodedAnalysisMetric):
     metric_name = "bframes"
 
 
+class ReferenceFramesMetric(EncodedAnalysisMetric):
+    field_name  = "refframes"
+    metric_name = "refframes"
+
+
 class FrameCountMetric(EncodedAnalysisMetric):
     field_name  = "frame_count"
     metric_name = "frame_count"
+
+
+class ScanTypeMetric(EncodedAnalysisMetric):
+    field_name  = "scan_type"
+    metric_name = "scan_type"
+
+
+class CropMetric(EncodedAnalysisMetric):
+    field_name  = "crop"
+    metric_name = "crop"
 
 
 class LevelMetric(Metric):
@@ -362,6 +377,9 @@ METRIC_HANDLERS: Dict[str, Metric] = {
     "interval-intraframe" : IntraFrameIntervalMetric(),
     "pframes"             : PFramesMetric(),
     "bframes"             : BFramesMetric(),
+    "refframes"           : ReferenceFramesMetric(),
     "frame_count"         : FrameCountMetric(),
+    "scan_type"           : ScanTypeMetric(),
+    "crop"                : CropMetric(),
     "psnr"                : PsnrMetric(),
 }
