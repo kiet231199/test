@@ -36,13 +36,14 @@ the parent repository.
   paths from the descriptor file's directory.
 - `models.py` contains the request, descriptor, metadata, and result data
   structures. These models form the reusable boundary for a future web API.
-- `media.py` defines raw-format geometry and the raw/encoded `VideoSource`
-  implementations backed by PyAV.
+- `media.py` defines raw-format geometry, the raw/encoded `VideoSource`
+  implementations, and cached encoded-stream analysis backed by PyAV.
 - `metrics.py` contains metric implementations and the `METRIC_HANDLERS`
   registry.
 - `checker.py` validates requested metric names and executes each metric while
   preserving independent successes and failures.
-- `yaml_io.py` writes result files atomically.
+- `result_io.py` writes YAML, TXT, and JSON result files atomically.
+- `yaml_io.py` retains the former writer import as a compatibility alias.
 - `errors.py` contains expected configuration, media, and metric exceptions.
 
 Keep the core checker independent from `argparse` and process exit handling so
@@ -59,8 +60,14 @@ media-check --input <descriptor> --check <metric> [<metric> ...]
 - `--input` / `-i` is required and contains input plus optional reference media.
 - `--check` / `-c` accepts one or more metrics.
 - `--output` / `-o` defaults to `metrics-result.yaml`.
+- Output paths support only `.txt`, `.yaml`, and `.json`, case-insensitively.
+  TXT and YAML share the same ordered YAML representation. JSON is ordered,
+  UTF-8, two-space indented, and ends with one newline.
+- An unsupported or missing output extension is a configuration error that
+  does not create directories or replace an existing target.
 - Supported metrics are `width`, `height`, `framerate`, `level`, `profile`,
-  and `psnr`.
+  `codec`, `bitrate`, `gop`, `interval-intraframe`, `pframes`, `bframes`,
+  `refframes`, `frame_count`, `scan_type`, `crop`, and `psnr`.
 - Raw input supports only `psnr`; each other recognized metric returns an
   independent `Unsupported metrics` metric error.
 - Duplicate metric names are removed while preserving request order.
@@ -107,7 +114,8 @@ The `path` field must be a non-empty string that resolves to an existing
 regular file. Relative media paths are resolved from the descriptor file's
 directory.
 
-Encoded `.264`, `.265`, and `.mp4` media sections require only a path:
+Encoded `.264`, `.26l`, `.h264`, `.265`, `.h265`, and `.mp4` media sections
+require only a path:
 
 ```yaml
 input:
@@ -117,6 +125,10 @@ input:
 MP4 input uses the first H.264 or H.265 video stream. Audio streams and video
 streams using other codecs are ignored. An MP4 file without H.264 or H.265
 video produces a media error.
+
+`.264`, `.26l`, and `.h264` select the H.264 elementary-stream demuxer.
+`.265` and `.h265` select the HEVC demuxer. Extension matching is
+case-insensitive for both input and reference media.
 
 Recognized raw fields may be present for encoded media, but encoded metadata
 is read from the stream and those fields are ignored.
@@ -165,6 +177,32 @@ Environment variable rules:
 
 - Metadata metrics return stream metadata for encoded media. Raw input supports
   only PSNR; every other recognized metric returns `Unsupported metrics`.
+- `codec` returns `h264` or `h265`; PyAV's internal `hevc` name is normalized
+  to `h265`.
+- `bitrate` returns integer bits per second for the selected video stream,
+  excluding audio and container overhead. A positive signaled stream bitrate
+  is preferred. Otherwise it is calculated from video-packet bytes and a
+  positive stream duration, or complete positive packet durations, and rounded
+  half-up.
+- `frame_count` counts completely decoded selected-video frames. A valid empty
+  stream returns zero; a decode failure makes the metric unavailable.
+- Observed GOPs begin with an I picture and end before the next I picture or at
+  end of file. Frames before the first I picture are ignored. `gop` is the
+  largest observed group; no I picture makes it unavailable.
+- `interval-intraframe` is the largest presentation-order frame distance
+  between adjacent I pictures. `pframes` and `bframes` count the corresponding
+  picture types strictly inside the earliest longest interval. These three
+  metrics are unavailable when fewer than two I pictures are decoded.
+- `refframes` returns the maximum SPS-signaled reference capacity: H.264
+  `max_num_ref_frames`, or the maximum HEVC
+  `sps_max_dec_pic_buffering_minus1` value.
+- `scan_type` returns `progressive` when all decoded frames are progressive, or
+  `interlace_tff` / `interlace_bff` when every decoded frame is interlaced with
+  one consistently signaled field order. Empty, mixed, inconsistent, or
+  unsignaled interlaced streams make it unavailable.
+- `crop` returns the codec SPS crop/conformance window in visible luma pixels
+  as `left:right:top:bottom`. No signaled crop returns `0:0:0:0`; conflicting
+  SPS crop windows make it unavailable.
 - PSNR compares visible pixels after removing raw stride and slice-height
   padding.
 - PSNR requires matching resolutions.

@@ -1,8 +1,9 @@
 # Media Checker
 
 `media-check` is a standalone Ubuntu 20.04 application for reading video
-metadata and calculating PSNR. It uses PyAV and NumPy directly and does not
-invoke `ffmpeg`, `ffprobe`, Bash, or subprocesses at runtime.
+metadata and encoded-stream structure, calculating PSNR, and writing ordered
+results. It uses PyAV and NumPy directly and does not invoke `ffmpeg`,
+`ffprobe`, Bash, or subprocesses at runtime.
 
 ## Automated setup
 
@@ -59,7 +60,10 @@ formats are ignored. An MP4 file without H.264 or H.265 video is a media error.
 Raw `.raw` and `.yuv` media require `path`, `width`, `height`, and `format`.
 `framerate`, `frame_count`, `stride`, and `sliceheight` are optional.
 
-Supported media extensions are `.raw`, `.yuv`, `.264`, `.265`, and `.mp4`.
+Supported media extensions are `.raw`, `.yuv`, `.264`, `.26l`, `.h264`,
+`.265`, `.h265`, and `.mp4`. H.26L and H.264 extensions use the H.264 demuxer;
+`.265` and `.h265` use the HEVC demuxer. Extension matching is
+case-insensitive.
 
 Supported raw formats are `NV12`, `YUY2`, `RGB16`, `RGB`, `RGBA`, and `GRAY8`.
 `stride` is the first plane's stored bytes per row, and `sliceheight` is the
@@ -113,17 +117,48 @@ validated, even when PSNR is not requested.
 ```bash
 media-check \
     --input media.yaml \
-    --check width height framerate level profile psnr \
+    --check codec bitrate gop interval-intraframe pframes bframes \
+            refframes frame_count scan_type crop psnr \
     --output metrics-result.yaml
 ```
 
 `--input/-i` is the combined YAML descriptor. `--check/-c` accepts one or more
-metrics. `--output/-o` defaults to `metrics-result.yaml` in the current
-directory. Run `media-check --help` to see every supported metric.
+metrics. `--output/-o` accepts only `.txt`, `.yaml`, or `.json` paths and
+defaults to `metrics-result.yaml` in the current directory. Extension matching
+is case-insensitive. TXT and YAML use the same ordered YAML representation;
+JSON uses an equivalent ordered, indented representation. Run
+`media-check --help` to see every supported metric.
 
 Raw input supports only `psnr`. Each other recognized metric produces an
 independent error with the value `Unsupported metrics`; this does not prevent a
 requested PSNR check from running.
+
+### Encoded metrics
+
+The original encoded metadata metrics are `width`, `height`, `framerate`,
+`level`, and `profile`. The stream-analysis metrics are:
+
+- `codec`: `h264` or `h265`.
+- `bitrate`: average selected-video bitrate in integer bits per second. Audio
+  and container overhead are excluded.
+- `gop`: largest observed I-picture group, including a final group ending at
+  end of file.
+- `interval-intraframe`: largest decoded frame distance between adjacent I
+  pictures.
+- `pframes` and `bframes`: counts strictly between the I pictures defining the
+  longest intra-frame interval; the earliest interval wins ties.
+- `refframes`: maximum reference-picture capacity signaled in the codec SPS.
+- `frame_count`: number of successfully decoded frames in the selected video
+  stream.
+- `scan_type`: `progressive`, `interlace_tff`, or `interlace_bff`. Mixed or
+  incompletely signaled scan modes produce an unavailable metric error.
+- `crop`: codec SPS crop window in visible luma pixels, formatted as
+  `left:right:top:bottom`.
+
+Metrics that cannot be determined from a stream fail independently. For
+example, a short stream with only one I picture can report `gop` and
+`frame_count` while `interval-intraframe`, `pframes`, and `bframes` report
+metric errors.
 
 The removed `--reference/-r` option is an argument error. Argument errors print
 the complete help and exit with status `2`.
@@ -149,6 +184,8 @@ configuration failures retain a top-level `error` field.
 
 Exit status `0` means every metric succeeded, `1` means at least one metric
 failed, and `2` means the command or descriptor configuration was invalid.
+An unsupported output suffix is a configuration error and does not create or
+replace the requested path.
 
 ## Development
 
