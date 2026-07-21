@@ -140,6 +140,31 @@ class BitrateMetric(EncodedAnalysisMetric):
     metric_name = "bitrate"
 
 
+class GopMetric(EncodedAnalysisMetric):
+    field_name  = "gop"
+    metric_name = "gop"
+
+
+class IntraFrameIntervalMetric(EncodedAnalysisMetric):
+    field_name  = "interval_intraframe"
+    metric_name = "interval-intraframe"
+
+
+class PFramesMetric(EncodedAnalysisMetric):
+    field_name  = "pframes"
+    metric_name = "pframes"
+
+
+class BFramesMetric(EncodedAnalysisMetric):
+    field_name  = "bframes"
+    metric_name = "bframes"
+
+
+class FrameCountMetric(EncodedAnalysisMetric):
+    field_name  = "frame_count"
+    metric_name = "frame_count"
+
+
 class LevelMetric(Metric):
     def calculate(self, context: MetricContext) -> str:
         metadata = context.input_source.metadata()
@@ -333,5 +358,10 @@ METRIC_HANDLERS: Dict[str, Metric] = {
     "profile"             : ProfileMetric(),
     "codec"               : CodecMetric(),
     "bitrate"             : BitrateMetric(),
+    "gop"                 : GopMetric(),
+    "interval-intraframe" : IntraFrameIntervalMetric(),
+    "pframes"             : PFramesMetric(),
+    "bframes"             : BFramesMetric(),
+    "frame_count"         : FrameCountMetric(),
     "psnr"                : PsnrMetric(),
 }

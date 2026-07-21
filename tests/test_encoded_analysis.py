@@ -198,5 +198,49 @@ class CodecAndBitrateMetricTests(unittest.TestCase):
         self.assertEqual(result.metrics["bitrate"].value, 123456)
 
 
+class FrameMetricTests(unittest.TestCase):
+    def test_gop_interval_picture_counts_and_frame_count_are_exposed(self):
+        descriptor = MediaDescriptor(
+            path       = Path("unused.265"),
+            media_type = ENCODED_MEDIA_TYPE,
+            extension  = ".265",
+        )
+        source = FakeAnalyzedSource(
+            descriptor,
+            "hevc",
+            _EncodedAnalysis(
+                gop                 = 12,
+                interval_intraframe = 12,
+                pframes             = 3,
+                bframes             = 8,
+                frame_count         = 30,
+            ),
+        )
+        metrics = (
+            "gop",
+            "interval-intraframe",
+            "pframes",
+            "bframes",
+            "frame_count",
+        )
+
+        with patch(
+            "media_checker.checker.create_video_source",
+            return_value = source,
+        ):
+            result = check(CheckRequest(
+                input     = descriptor,
+                reference = None,
+                metrics   = metrics,
+            ))
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.metrics["gop"].value, 12)
+        self.assertEqual(result.metrics["interval-intraframe"].value, 12)
+        self.assertEqual(result.metrics["pframes"].value, 3)
+        self.assertEqual(result.metrics["bframes"].value, 8)
+        self.assertEqual(result.metrics["frame_count"].value, 30)
+
+
 if __name__ == "__main__":
     unittest.main()
