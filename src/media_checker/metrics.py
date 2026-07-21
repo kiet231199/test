@@ -7,7 +7,7 @@ import av
 import numpy as np
 
 from media_checker.errors import MediaError, MetricError
-from media_checker.media import RAW_FORMATS, VideoSource
+from media_checker.media import RAW_FORMATS, VideoSource, _EncodedAnalysisSource
 
 
 INFINITE_PSNR_VALUE = 1000.0
@@ -99,6 +99,45 @@ class ProfileMetric(MetadataMetric):
 
     def calculate(self, context: MetricContext) -> str:
         return str(super().calculate(context))
+
+
+class CodecMetric(MetadataMetric):
+    field_name = "codec_name"
+
+    def calculate(self, context: MetricContext) -> str:
+        value = str(super().calculate(context)).lower()
+
+        if value == "h264":
+            return "h264"
+
+        if value in ("hevc", "h265"):
+            return "h265"
+
+        raise MetricError("Metric 'codec' is unavailable for the input media")
+
+
+class EncodedAnalysisMetric(Metric):
+    field_name  = ""
+    metric_name = ""
+
+    def calculate(self, context: MetricContext):
+        source   = cast(_EncodedAnalysisSource, context.input_source)
+        analysis = source.analysis()
+        value    = getattr(analysis, self.field_name)
+
+        if value is None:
+            raise MetricError(
+                "Metric '{}' is unavailable for the input media".format(
+                    self.metric_name
+                )
+            )
+
+        return value
+
+
+class BitrateMetric(EncodedAnalysisMetric):
+    field_name  = "bitrate"
+    metric_name = "bitrate"
 
 
 class LevelMetric(Metric):
@@ -287,10 +326,12 @@ def _level_text(codec_name: Optional[str], level: int) -> str:
 
 
 METRIC_HANDLERS: Dict[str, Metric] = {
-    "width"     : WidthMetric(),
-    "height"    : HeightMetric(),
-    "framerate" : FramerateMetric(),
-    "level"     : LevelMetric(),
-    "profile"   : ProfileMetric(),
-    "psnr"      : PsnrMetric(),
+    "width"               : WidthMetric(),
+    "height"              : HeightMetric(),
+    "framerate"           : FramerateMetric(),
+    "level"               : LevelMetric(),
+    "profile"             : ProfileMetric(),
+    "codec"               : CodecMetric(),
+    "bitrate"             : BitrateMetric(),
+    "psnr"                : PsnrMetric(),
 }

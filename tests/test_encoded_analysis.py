@@ -170,5 +170,33 @@ class FrameAnalysisTests(unittest.TestCase):
         self.assertEqual(summary.scan_mode, "progressive")
 
 
+class CodecAndBitrateMetricTests(unittest.TestCase):
+    def test_codec_and_bitrate_are_exposed(self):
+        descriptor = MediaDescriptor(
+            path       = Path("unused.265"),
+            media_type = ENCODED_MEDIA_TYPE,
+            extension  = ".265",
+        )
+        source = FakeAnalyzedSource(
+            descriptor,
+            "hevc",
+            _EncodedAnalysis(bitrate = 123456),
+        )
+
+        with patch(
+            "media_checker.checker.create_video_source",
+            return_value = source,
+        ):
+            result = check(CheckRequest(
+                input     = descriptor,
+                reference = None,
+                metrics   = ("codec", "bitrate"),
+            ))
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.metrics["codec"].value, "h265")
+        self.assertEqual(result.metrics["bitrate"].value, 123456)
+
+
 if __name__ == "__main__":
     unittest.main()
