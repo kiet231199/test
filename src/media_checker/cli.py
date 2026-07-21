@@ -12,7 +12,7 @@ from media_checker.models import (
     CheckRequest,
     CheckResult,
 )
-from media_checker.yaml_io import write_result
+from media_checker.result_io import output_format, write_result
 
 
 DEFAULT_OUTPUT = "metrics-result.yaml"
@@ -109,7 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = ArgumentParser(
         prog            = "media-check",
-        description     = "Check metadata and PSNR for raw or encoded video",
+        description     = "Check metadata, stream structure, and PSNR for video",
         add_help        = False,
         formatter_class = HelpFormatter,
     )
@@ -143,7 +143,9 @@ def build_parser() -> argparse.ArgumentParser:
         "-o",
         "--output",
         default = DEFAULT_OUTPUT,
-        help    = "Result YAML path (default: {})".format(DEFAULT_OUTPUT),
+        help    = (
+            "Result .txt, .yaml, or .json path (default: {})"
+        ).format(DEFAULT_OUTPUT),
     )
 
     return parser
@@ -155,6 +157,12 @@ def run(arguments: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args   = parser.parse_args(arguments)
     output = Path(args.output)
+
+    try:
+        output_format(output)
+    except ConfigurationError as error:
+        print(str(error), file = sys.stderr)
+        return EXIT_CONFIGURATION
 
     try:
         metrics = normalize_metrics(args.check)
