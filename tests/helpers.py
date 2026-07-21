@@ -1,6 +1,6 @@
 from fractions import Fraction
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 import av
 import numpy as np
@@ -80,6 +80,10 @@ def encode_elementary_video(
     container_format: str,
     rate: Fraction = Fraction(24, 1),
     frame_count: int = 2,
+    width: int = 16,
+    height: int = 16,
+    options: Optional[Dict[str, str]] = None,
+    interlaced: bool = False,
 ) -> None:
     encode_container_video(
         path,
@@ -87,6 +91,10 @@ def encode_elementary_video(
         container_format,
         rate,
         frame_count,
+        width = width,
+        height = height,
+        options = options,
+        interlaced = interlaced,
     )
 
 
@@ -97,18 +105,33 @@ def encode_container_video(
     rate: Fraction = Fraction(24, 1),
     frame_count: int = 2,
     include_audio: bool = False,
+    width: int = 16,
+    height: int = 16,
+    options: Optional[Dict[str, str]] = None,
+    interlaced: bool = False,
 ) -> None:
-    width  = 16
-    height = 16
-
     with av.open(str(path), mode = "w", format = container_format) as container:
         stream         = container.add_stream(codec_name, rate = rate)
         stream.width   = width
         stream.height  = height
         stream.pix_fmt = "yuv420p"
 
+        stream_options = dict(options or {})
+
         if codec_name == "libx265":
-            stream.options = {"x265-params" : "log-level=error:pools=1"}
+            x265_parameters = stream_options.get("x265-params", "")
+            x265_defaults = "log-level=error:pools=1"
+            stream_options["x265-params"] = ":".join(filter(None, (
+                x265_defaults,
+                x265_parameters,
+            )))
+
+        if stream_options:
+            stream.options = stream_options
+
+        if interlaced:
+            stream.codec_context.interlaced_dct = True
+            stream.codec_context.interlaced_me  = True
 
         audio_stream = None
 

@@ -16,6 +16,7 @@ from media_checker.media import (
     _crop_text,
     _field_order,
     _reference_frames,
+    _summarize_frames,
 )
 from media_checker.models import (
     ENCODED_MEDIA_TYPE,
@@ -153,6 +154,20 @@ class CodecTraceTests(unittest.TestCase):
         self.assertIsNone(_field_order("h264", [[1], [2]]))
         self.assertIsNone(_field_order("hevc", [[1], [10]]))
         self.assertIsNone(_field_order("hevc", [[1, 2], []]))
+
+class FrameAnalysisTests(unittest.TestCase):
+    def test_frame_summary_uses_longest_observed_i_picture_groups(self):
+        summary = _summarize_frames(
+            ["P", "I", "P", "B", "I", "B", "I", "P", "P"],
+            [False] * 9,
+        )
+
+        self.assertEqual(summary.frame_count, 9)
+        self.assertEqual(summary.gop, 3)
+        self.assertEqual(summary.interval_intraframe, 3)
+        self.assertEqual(summary.pframes, 1)
+        self.assertEqual(summary.bframes, 1)
+        self.assertEqual(summary.scan_mode, "progressive")
 
 
 if __name__ == "__main__":
