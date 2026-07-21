@@ -1,9 +1,22 @@
 import os
+import re
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional
+from typing import (
+    Callable,
+    Dict,
+    FrozenSet,
+    Iterable,
+    Iterator,
+    List,
+    Optional,
+    Pattern,
+    Protocol,
+    Tuple,
+)
 
 import av
 
@@ -24,6 +37,370 @@ ENCODED_VIDEO_EXTENSIONS = tuple(ENCODED_INPUT_FORMATS)
 SUPPORTED_EXTENSIONS = RAW_VIDEO_EXTENSIONS + ENCODED_VIDEO_EXTENSIONS
 
 SUPPORTED_ENCODED_CODECS = frozenset(("h264", "hevc"))
+H264_MACROBLOCK_SIZE = 16
+
+TRACE_FIELD_PATTERN = re.compile(
+    r"^\s*\d+\s+(?P<name>[A-Za-z0-9_\[\]]+)\s+"
+    r"[-.01]+\s+=\s+(?P<value>-?\d+)\s*$"
+)
+TRACE_UNIT_PATTERN = re.compile(r"nal_unit_type:\s*(?P<value>\d+)\(")
+
+HEADER_TRACE_LOCK = threading.RLock()
+
+
+@dataclass(frozen = True)
+class _PacketSummary:
+    bitrate           : Optional[int] = None
+    refframes         : Optional[int] = None
+    crop              : Optional[str] = None
+    field_order       : Optional[str] = None
+    field_order_count : int = 0
+
+
+@dataclass(frozen = True)
+class _FrameSummary:
+    frame_count         : Optional[int] = None
+    gop                 : Optional[int] = None
+    interval_intraframe : Optional[int] = None
+    pframes             : Optional[int] = None
+    bframes             : Optional[int] = None
+    scan_mode           : Optional[str] = None
+
+
+@dataclass(frozen = True)
+class _EncodedAnalysis:
+    """Cached whole-stream values used by encoded-only metrics."""
+
+    bitrate             : Optional[int] = None
+    gop                 : Optional[int] = None
+    interval_intraframe : Optional[int] = None
+    pframes             : Optional[int] = None
+    bframes             : Optional[int] = None
+    refframes           : Optional[int] = None
+    frame_count         : Optional[int] = None
+    scan_type           : Optional[str] = None
+    crop                : Optional[str] = None
+
+
+@dataclass(frozen = True)
+class _TraceCodec:
+    sps_unit           : int
+    reference_field    : Pattern[str]
+    crop_parser        : Callable[
+        [Dict[str, int]],
+        Optional[Tuple[int, int, int, int]],
+    ]
+    top_field_first    : FrozenSet[int]
+    bottom_field_first : FrozenSet[int]
+    field_sequence     : Optional[Tuple[int, int]] = None
+
+
+class _TraceHeaderParser:
+    """Reduce FFmpeg trace_headers messages to stable codec observations."""
+
+    def __init__(self, codec_name: Optional[str]):
+        self.codec_name = codec_name
+        self.parameter_sets = []  # type: List[Dict[str, int]]
+        self.access_unit_structures = []  # type: List[List[int]]
+        self._parameter_set = None  # type: Optional[Dict[str, int]]
+
+    def feed(
+        self,
+        logs: Iterable[Tuple[int, str, str]],
+        access_unit: bool = False,
+    ) -> None:
+        codec = _TRACE_CODECS.get(self.codec_name or "")
+
+        if codec is None:
+            return
+
+        picture_structures = []  # type: List[int]
+
+        for _, component, message in logs:
+            if component != "trace_headers":
+                continue
+
+            if TRACE_UNIT_PATTERN.search(message) is not None:
+                continue
+
+            field_match = TRACE_FIELD_PATTERN.match(message)
+
+            if field_match is None:
+                continue
+
+            name  = field_match.group("name")
+            value = int(field_match.group("value"))
+
+            if name == "nal_unit_type":
+                self._finish_parameter_set()
+
+                if value == codec.sps_unit:
+                    self._parameter_set = {}
+
+                continue
+
+            if name == "pic_struct":
+                picture_structures.append(value)
+
+            if self._parameter_set is not None:
+                self._parameter_set[name] = value
+
+        if access_unit:
+            self.access_unit_structures.append(picture_structures)
+
+    def values(
+        self,
+    ) -> Tuple[Optional[int], Optional[str], Optional[str], int]:
+        self._finish_parameter_set()
+
+        return (
+            _reference_frames(self.codec_name, self.parameter_sets),
+            _crop_text(self.codec_name, self.parameter_sets),
+            _field_order(self.codec_name, self.access_unit_structures),
+            len(self.access_unit_structures),
+        )
+
+    def _finish_parameter_set(self) -> None:
+        if self._parameter_set is not None:
+            self.parameter_sets.append(self._parameter_set)
+            self._parameter_set = None
+
+
+def _reference_frames(
+    codec_name: Optional[str],
+    parameter_sets: List[Dict[str, int]],
+) -> Optional[int]:
+    codec = _TRACE_CODECS.get(codec_name or "")
+
+    if codec is None:
+        return None
+
+    values = [
+        value
+        for fields in parameter_sets
+        for name, value in fields.items()
+        if codec.reference_field.fullmatch(name) is not None and value >= 0
+    ]
+
+    return max(values) if values else None
+
+
+def _crop_text(
+    codec_name: Optional[str],
+    parameter_sets: List[Dict[str, int]],
+) -> Optional[str]:
+    codec = _TRACE_CODECS.get(codec_name or "")
+
+    if codec is None or not parameter_sets:
+        return None
+
+    crops = []  # type: List[Tuple[int, int, int, int]]
+
+    for fields in parameter_sets:
+        crop = codec.crop_parser(fields)
+
+        if crop is None:
+            return None
+
+        crops.append(crop)
+
+    if len(set(crops)) != 1:
+        return None
+
+    return ":".join(str(value) for value in crops[0])
+
+
+def _h264_crop(fields: Dict[str, int]) -> Optional[Tuple[int, int, int, int]]:
+    cropping_flag = fields.get("frame_cropping_flag")
+    frame_only    = fields.get("frame_mbs_only_flag")
+
+    if cropping_flag not in (0, 1) or frame_only not in (0, 1):
+        return None
+
+    chroma_format = fields.get("chroma_format_idc", 1)
+
+    if fields.get("separate_colour_plane_flag", 0) == 1:
+        chroma_format = 0
+
+    width_in_mbs_minus_one = fields.get("pic_width_in_mbs_minus1")
+    height_in_maps_minus_one = fields.get("pic_height_in_map_units_minus1")
+
+    if (
+        width_in_mbs_minus_one is None
+        or width_in_mbs_minus_one < 0
+        or height_in_maps_minus_one is None
+        or height_in_maps_minus_one < 0
+    ):
+        coded_size = (None, None)
+    else:
+        coded_width  = (width_in_mbs_minus_one + 1) * H264_MACROBLOCK_SIZE
+        coded_height = (
+            (height_in_maps_minus_one + 1)
+            * H264_MACROBLOCK_SIZE
+            * (2 - frame_only)
+        )
+        coded_size   = (coded_width, coded_height)
+
+    return _scaled_crop(
+        fields,
+        cropping_flag,
+        chroma_format,
+        (
+            "frame_crop_left_offset",
+            "frame_crop_right_offset",
+            "frame_crop_top_offset",
+            "frame_crop_bottom_offset",
+        ),
+        coded_size,
+        vertical_multiplier = 2 - frame_only,
+    )
+
+
+def _h265_crop(fields: Dict[str, int]) -> Optional[Tuple[int, int, int, int]]:
+    cropping_flag = fields.get("conformance_window_flag")
+
+    if cropping_flag not in (0, 1):
+        return None
+
+    return _scaled_crop(
+        fields,
+        cropping_flag,
+        fields.get("chroma_format_idc", 1),
+        (
+            "conf_win_left_offset",
+            "conf_win_right_offset",
+            "conf_win_top_offset",
+            "conf_win_bottom_offset",
+        ),
+        (
+            fields.get("pic_width_in_luma_samples"),
+            fields.get("pic_height_in_luma_samples"),
+        ),
+    )
+
+
+def _scaled_crop(
+    fields: Dict[str, int],
+    cropping_flag: int,
+    chroma_format: int,
+    offset_names: Tuple[str, str, str, str],
+    coded_size: Tuple[Optional[int], Optional[int]],
+    vertical_multiplier: int = 1,
+) -> Optional[Tuple[int, int, int, int]]:
+    if cropping_flag == 0:
+        return (0, 0, 0, 0)
+
+    units = _chroma_crop_units(chroma_format)
+
+    if units is None:
+        return None
+
+    unit_x, unit_y = units
+    unit_y *= vertical_multiplier
+    offsets = tuple(fields.get(name) for name in offset_names)
+
+    if any(value is None or value < 0 for value in offsets):
+        return None
+
+    left, right, top, bottom = offsets
+    crop = (left * unit_x, right * unit_x, top * unit_y, bottom * unit_y)
+    coded_width, coded_height = coded_size
+
+    if (
+        coded_width is None
+        or coded_width <= crop[0] + crop[1]
+        or coded_height is None
+        or coded_height <= crop[2] + crop[3]
+    ):
+        return None
+
+    return crop
+
+
+def _chroma_crop_units(chroma_format: int) -> Optional[Tuple[int, int]]:
+    return {
+        0 : (1, 1),
+        1 : (2, 2),
+        2 : (2, 1),
+        3 : (1, 1),
+    }.get(chroma_format)
+
+
+_TRACE_CODECS = {
+    "h264" : _TraceCodec(
+        sps_unit           = 7,
+        reference_field    = re.compile(r"max_num_ref_frames"),
+        crop_parser        = _h264_crop,
+        top_field_first    = frozenset((3, 5)),
+        bottom_field_first = frozenset((4, 6)),
+    ),
+    "hevc" : _TraceCodec(
+        sps_unit           = 33,
+        reference_field    = re.compile(
+            r"sps_max_dec_pic_buffering_minus1\[\d+\]"
+        ),
+        crop_parser        = _h265_crop,
+        top_field_first    = frozenset((3, 5, 10, 11)),
+        bottom_field_first = frozenset((4, 6, 9, 12)),
+        field_sequence     = (1, 2),
+    ),
+}
+
+
+def _field_order(
+    codec_name: Optional[str],
+    picture_structure_groups: List[List[int]],
+) -> Optional[str]:
+    codec = _TRACE_CODECS.get(codec_name or "")
+
+    if codec is None:
+        return None
+
+    if any(len(group) != 1 for group in picture_structure_groups):
+        return None
+
+    picture_structures = [group[0] for group in picture_structure_groups]
+    orders = []
+
+    for value in picture_structures:
+        if value in codec.top_field_first:
+            orders.append("interlace_tff")
+        elif value in codec.bottom_field_first:
+            orders.append("interlace_bff")
+        else:
+            orders.append(None)
+
+    distinct_orders = set(order for order in orders if order is not None)
+
+    if len(distinct_orders) == 1 and None not in orders:
+        return orders[0]
+
+    if codec.field_sequence is not None and picture_structures:
+        first_field, second_field = codec.field_sequence
+
+        if all(
+            value in codec.field_sequence
+            for value in picture_structures
+        ):
+            # HEVC field pictures arrive in decode order, so B pictures can
+            # group like fields. A legal sequence still has paired counts.
+            first_signal = picture_structures[0]
+            expected_first_count = (len(picture_structures) + 1) // 2
+            expected_second_count = len(picture_structures) // 2
+
+            if (
+                picture_structures.count(first_signal) == expected_first_count
+                and picture_structures.count(
+                    second_field if first_signal == first_field else first_field
+                ) == expected_second_count
+            ):
+                return (
+                    "interlace_tff"
+                    if first_signal == first_field
+                    else "interlace_bff"
+                )
+
+    return None
 
 
 @dataclass(frozen = True)
