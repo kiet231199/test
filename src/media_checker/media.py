@@ -13,9 +13,12 @@ from media_checker.models import MediaDescriptor, VideoMetadata
 
 RAW_VIDEO_EXTENSIONS        = (".raw", ".yuv")
 ENCODED_INPUT_FORMATS: Dict[str, Optional[str]] = {
-    ".264" : "h264",
-    ".265" : "hevc",
-    ".mp4" : None,
+    ".264"  : "h264",
+    ".26l"  : "h264",
+    ".h264" : "h264",
+    ".265"  : "hevc",
+    ".h265" : "hevc",
+    ".mp4"  : None,
 }
 ENCODED_VIDEO_EXTENSIONS = tuple(ENCODED_INPUT_FORMATS)
 SUPPORTED_EXTENSIONS = RAW_VIDEO_EXTENSIONS + ENCODED_VIDEO_EXTENSIONS
