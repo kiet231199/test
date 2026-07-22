@@ -138,6 +138,9 @@ requested PSNR check from running.
 The original encoded metadata metrics are `width`, `height`, `framerate`,
 `level`, and `profile`. The stream-analysis metrics are:
 
+- `framerate`: estimated displayed frames per second, written as an exact
+  numerator/denominator value such as `24/1` or `30000/1001`.
+
 - `codec`: `h264` or `h265`.
 - `bitrate`: average selected-video bitrate in integer bits per second. Audio
   and container overhead are excluded.

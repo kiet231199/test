@@ -401,8 +401,48 @@ class EncodedMediaTests(unittest.TestCase):
                     self.assertEqual(result.status, STATUS_SUCCESS)
                     self.assertEqual(result.metrics["width"].value, 16)
                     self.assertEqual(result.metrics["height"].value, 16)
-                    self.assertIsInstance(result.metrics["framerate"].value, str)
+                    self.assertEqual(result.metrics["framerate"].value, "24/1")
                     self.assertIsInstance(result.metrics["profile"].value, str)
+
+    def test_encoded_framerates_use_displayed_frame_cadence(self):
+        media_cases = (
+            ("sample.264", "libx264", "h264"),
+            ("sample.265", "libx265", "hevc"),
+            ("sample-h264.mp4", "libx264", "mp4"),
+            ("sample-h265.mp4", "libx265", "mp4"),
+        )
+        rate_cases = (
+            (Fraction(24, 1), "24/1"),
+            (Fraction(30000, 1001), "30000/1001"),
+        )
+
+        for file_name, encoder_name, container_format in media_cases:
+            for rate, expected in rate_cases:
+                with self.subTest(file_name = file_name, rate = rate):
+                    with tempfile.TemporaryDirectory() as folder:
+                        path = Path(folder) / file_name
+                        encode_container_video(
+                            path,
+                            encoder_name,
+                            container_format,
+                            rate = rate,
+                        )
+                        descriptor = MediaDescriptor(
+                            path       = path,
+                            media_type = ENCODED_MEDIA_TYPE,
+                            extension  = path.suffix,
+                        )
+
+                        result = check(CheckRequest(
+                            input     = descriptor,
+                            reference = None,
+                            metrics   = ("framerate",),
+                        ))
+
+                        self.assertEqual(
+                            result.metrics["framerate"].value,
+                            expected,
+                        )
 
     def test_mp4_h264_and_h265_video_decode_while_audio_is_ignored(self):
         cases = (

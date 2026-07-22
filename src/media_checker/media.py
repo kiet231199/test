@@ -789,7 +789,7 @@ class EncodedVideoSource(VideoSource):
                 self._metadata = VideoMetadata(
                     width      = int(context.width),
                     height     = int(context.height),
-                    framerate  = getattr(stream, "base_rate", None),
+                    framerate  = _encoded_framerate(stream, context),
                     format     = getattr(pixel_format, "name", None),
                     profile    = _profile_text(getattr(context, "profile", None)),
                     level      = _optional_int(getattr(context, "level", None)),
@@ -1080,6 +1080,26 @@ def _codec_name(context) -> Optional[str]:
         return None
 
     return str(codec_name).lower()
+
+
+def _encoded_framerate(stream, context) -> Optional[Fraction]:
+    for value in (
+        getattr(stream, "guessed_rate", None),
+        getattr(context, "framerate", None),
+        getattr(stream, "average_rate", None),
+    ):
+        if value is None:
+            continue
+
+        try:
+            framerate = Fraction(value)
+        except (TypeError, ValueError, ZeroDivisionError):
+            continue
+
+        if framerate > 0:
+            return framerate
+
+    return None
 
 
 def _time_base(framerate: Optional[Fraction]) -> Optional[Fraction]:
