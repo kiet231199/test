@@ -128,14 +128,17 @@ def build_parser() -> argparse.ArgumentParser:
         required = True,
         help     = "YAML descriptor for the media being checked",
     )
-    metrics_help = "Metrics to calculate. Supported metrics:\n{}".format(
-        "\n".join("  - {}".format(name) for name in METRIC_HANDLERS)
-    )
+    metrics_help = (
+        "Metrics to calculate; omit names to calculate all. Supported metrics:\n{}"
+    ).format("\n".join(
+        "  - {}".format(name)
+        for name in METRIC_HANDLERS
+    ))
     parser.add_argument(
         "-c",
         "--check",
         required = True,
-        nargs    = "+",
+        nargs    = "*",
         metavar  = "METRIC",
         help     = metrics_help,
     )
@@ -165,7 +168,8 @@ def run(arguments: Optional[List[str]] = None) -> int:
         return EXIT_CONFIGURATION
 
     try:
-        metrics = normalize_metrics(args.check)
+        requested_metrics = args.check or tuple(METRIC_HANDLERS)
+        metrics = normalize_metrics(requested_metrics)
         descriptors = load_descriptor(Path(args.input))
 
         result = check(CheckRequest(

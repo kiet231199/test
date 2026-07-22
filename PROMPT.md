@@ -53,12 +53,13 @@ server later.
 # CLI contract
 
 ```text
-media-check --input <descriptor> --check <metric> [<metric> ...]
+media-check --input <descriptor> --check [<metric> ...]
             [--output <result>]
 ```
 
 - `--input` / `-i` is required and contains input plus optional reference media.
-- `--check` / `-c` accepts one or more metrics.
+- `--check` / `-c` is required and accepts zero or more metrics. With no metric
+  names it checks every supported metric in registry order.
 - `--output` / `-o` defaults to `metrics-result.yaml`.
 - Output paths support only `.txt`, `.yaml`, and `.json`, case-insensitively.
   TXT and YAML share the same ordered YAML representation. JSON is ordered,

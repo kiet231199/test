@@ -122,10 +122,12 @@ media-check \
     --output metrics-result.yaml
 ```
 
-`--input/-i` is the combined YAML descriptor. `--check/-c` accepts one or more
-metrics. `--output/-o` accepts only `.txt`, `.yaml`, or `.json` paths and
-defaults to `metrics-result.yaml` in the current directory. Extension matching
-is case-insensitive. TXT and YAML use the same ordered YAML representation;
+`--input/-i` is the combined YAML descriptor. `--check/-c` is required and
+accepts zero or more metric names. With no names it checks every supported
+metric in the order shown by `--help`. `--output/-o` accepts only `.txt`,
+`.yaml`, or `.json` paths and defaults to `metrics-result.yaml` in the current
+directory. Extension matching is case-insensitive. TXT and YAML use the same
+ordered YAML representation;
 JSON uses an equivalent ordered, indented representation. Run
 `media-check --help` to see every supported metric.
 
