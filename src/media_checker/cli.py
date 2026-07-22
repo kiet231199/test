@@ -15,7 +15,7 @@ from media_checker.models import (
 from media_checker.result_io import output_format, write_result
 
 
-DEFAULT_OUTPUT = "metrics-result.yaml"
+DEFAULT_OUTPUT = "result.yaml"
 
 EXIT_SUCCESS       = 0
 EXIT_METRIC_FAILED = 1

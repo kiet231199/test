@@ -60,7 +60,7 @@ media-check --input <descriptor> --check [<metric> ...]
 - `--input` / `-i` is required and contains input plus optional reference media.
 - `--check` / `-c` is required and accepts zero or more metrics. With no metric
   names it checks every supported metric in registry order.
-- `--output` / `-o` defaults to `metrics-result.yaml`.
+- `--output` / `-o` defaults to `result.yaml`.
 - Output paths support only `.txt`, `.yaml`, and `.json`, case-insensitively.
   TXT and YAML share the same ordered YAML representation. JSON is ordered,
   UTF-8, two-space indented, and ends with one newline.

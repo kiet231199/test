@@ -134,6 +134,7 @@ class ResultFormatTests(unittest.TestCase):
             self.assertIn("  - {}".format(metric), help_text)
 
         self.assertIn(".txt, .yaml, or .json", help_text)
+        self.assertIn("default: result.yaml", help_text)
 
 
 if __name__ == "__main__":

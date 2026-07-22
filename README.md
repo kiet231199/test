@@ -119,13 +119,13 @@ media-check \
     --input media.yaml \
     --check codec bitrate gop interval-intraframe pframes bframes \
             refframes frame_count scan_type crop psnr \
-    --output metrics-result.yaml
+    --output result.yaml
 ```
 
 `--input/-i` is the combined YAML descriptor. `--check/-c` is required and
 accepts zero or more metric names. With no names it checks every supported
 metric in the order shown by `--help`. `--output/-o` accepts only `.txt`,
-`.yaml`, or `.json` paths and defaults to `metrics-result.yaml` in the current
+`.yaml`, or `.json` paths and defaults to `result.yaml` in the current
 directory. Extension matching is case-insensitive. TXT and YAML use the same
 ordered YAML representation;
 JSON uses an equivalent ordered, indented representation. Run

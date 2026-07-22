@@ -88,7 +88,7 @@ class CliTests(unittest.TestCase):
             finally:
                 os.chdir(previous_directory)
 
-            result_path = root / "metrics-result.yaml"
+            result_path = root / "result.yaml"
             result = yaml.safe_load(result_path.read_text(encoding = "utf-8"))
 
             self.assertEqual(exit_status, EXIT_METRIC_FAILED)
@@ -100,6 +100,7 @@ class CliTests(unittest.TestCase):
             )
             self.assertEqual(result["metrics"]["psnr"]["value"], 1000.0)
             self.assertNotIn("error", result["metrics"]["width"])
+            self.assertFalse((root / "metrics-result.yaml").exists())
 
     def test_cli_loads_reference_from_the_input_document(self):
         with tempfile.TemporaryDirectory() as folder:
