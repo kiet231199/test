@@ -47,10 +47,14 @@ TRACE_UNIT_PATTERN = re.compile(r"nal_unit_type:\s*(?P<value>\d+)\(")
 
 HEADER_TRACE_LOCK = threading.RLock()
 
+H264_LEVEL_1B     = 9
+H264_LEVEL_1B_IDC = 11
+
 
 @dataclass(frozen = True)
 class _PacketSummary:
     bitrate           : Optional[int] = None
+    level             : Optional[int] = None
     refframes         : Optional[int] = None
     crop              : Optional[str] = None
     field_order       : Optional[str] = None
@@ -72,6 +76,7 @@ class _EncodedAnalysis:
     """Cached whole-stream values used by encoded-only metrics."""
 
     bitrate             : Optional[int] = None
+    level               : Optional[int] = None
     gop                 : Optional[int] = None
     interval_intraframe : Optional[int] = None
     pframes             : Optional[int] = None
@@ -85,6 +90,7 @@ class _EncodedAnalysis:
 @dataclass(frozen = True)
 class _TraceCodec:
     sps_unit           : int
+    level_field        : str
     reference_field    : Pattern[str]
     crop_parser        : Callable[
         [Dict[str, int]],
@@ -150,10 +156,11 @@ class _TraceHeaderParser:
 
     def values(
         self,
-    ) -> Tuple[Optional[int], Optional[str], Optional[str], int]:
+    ) -> Tuple[Optional[int], Optional[int], Optional[str], Optional[str], int]:
         self._finish_parameter_set()
 
         return (
+            _codec_level(self.codec_name, self.parameter_sets),
             _reference_frames(self.codec_name, self.parameter_sets),
             _crop_text(self.codec_name, self.parameter_sets),
             _field_order(self.codec_name, self.access_unit_structures),
@@ -164,6 +171,37 @@ class _TraceHeaderParser:
         if self._parameter_set is not None:
             self.parameter_sets.append(self._parameter_set)
             self._parameter_set = None
+
+
+def _codec_level(
+    codec_name: Optional[str],
+    parameter_sets: List[Dict[str, int]],
+) -> Optional[int]:
+    codec = _TRACE_CODECS.get(codec_name or "")
+
+    if codec is None or not parameter_sets:
+        return None
+
+    levels = []
+
+    for fields in parameter_sets:
+        level = fields.get(codec.level_field)
+
+        if level is None or level < 0:
+            return None
+
+        if codec_name == "h264" and level == H264_LEVEL_1B_IDC:
+            constraint_set3 = fields.get("constraint_set3_flag")
+
+            if constraint_set3 not in (0, 1):
+                return None
+
+            if constraint_set3 == 1:
+                level = H264_LEVEL_1B
+
+        levels.append(level)
+
+    return levels[0] if len(set(levels)) == 1 else None
 
 
 def _reference_frames(
@@ -329,6 +367,7 @@ def _chroma_crop_units(chroma_format: int) -> Optional[Tuple[int, int]]:
 _TRACE_CODECS = {
     "h264" : _TraceCodec(
         sps_unit           = 7,
+        level_field        = "level_idc",
         reference_field    = re.compile(r"max_num_ref_frames"),
         crop_parser        = _h264_crop,
         top_field_first    = frozenset((3, 5)),
@@ -336,6 +375,7 @@ _TRACE_CODECS = {
     ),
     "hevc" : _TraceCodec(
         sps_unit           = 33,
+        level_field        = "general_level_idc",
         reference_field    = re.compile(
             r"sps_max_dec_pic_buffering_minus1\[\d+\]"
         ),
@@ -842,6 +882,7 @@ class EncodedVideoSource(VideoSource):
 
         self._analysis = _EncodedAnalysis(
             bitrate             = packets.bitrate,
+            level               = packets.level,
             gop                 = frames.gop,
             interval_intraframe = frames.interval_intraframe,
             pframes             = frames.pframes,
@@ -968,8 +1009,9 @@ def _inspect_packets(container, stream, codec_name: Optional[str]) -> _PacketSum
             bitrate = int(average + Fraction(1, 2))
 
     if trace_valid:
-        refframes, crop, field_order, field_order_count = parser.values()
+        level, refframes, crop, field_order, field_order_count = parser.values()
     else:
+        level             = None
         refframes         = None
         crop              = None
         field_order       = None
@@ -977,6 +1019,7 @@ def _inspect_packets(container, stream, codec_name: Optional[str]) -> _PacketSum
 
     return _PacketSummary(
         bitrate           = bitrate,
+        level             = level,
         refframes         = refframes,
         crop              = crop,
         field_order       = field_order,

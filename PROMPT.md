@@ -180,6 +180,8 @@ Environment variable rules:
 - `framerate` returns the best estimated displayed frame cadence as a canonical
   numerator/denominator string. Timestamp or field cadence is not reported as
   the frame rate.
+- `level` returns the H.264 or H.265 SPS-signaled codec level in human-readable
+  form, including H.264 level `1b`.
 - `codec` returns `h264` or `h265`; PyAV's internal `hevc` name is normalized
   to `h265`.
 - `bitrate` returns integer bits per second for the selected video stream,

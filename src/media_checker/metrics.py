@@ -183,11 +183,16 @@ class CropMetric(EncodedAnalysisMetric):
 class LevelMetric(Metric):
     def calculate(self, context: MetricContext) -> str:
         metadata = context.input_source.metadata()
+        level    = metadata.level
 
-        if metadata.level is None:
+        if level is None:
+            source = cast(_EncodedAnalysisSource, context.input_source)
+            level  = source.analysis().level
+
+        if level is None:
             raise MetricError("Metric 'level' is unavailable for the input media")
 
-        return _level_text(metadata.codec_name, metadata.level)
+        return _level_text(metadata.codec_name, level)
 
 
 class PsnrMetric(Metric):

@@ -140,6 +140,8 @@ The original encoded metadata metrics are `width`, `height`, `framerate`,
 
 - `framerate`: estimated displayed frames per second, written as an exact
   numerator/denominator value such as `24/1` or `30000/1001`.
+- `level`: the codec level signaled by the H.264 or H.265 SPS, normalized to a
+  readable value such as `4.1` or H.264 `1b`.
 
 - `codec`: `h264` or `h265`.
 - `bitrate`: average selected-video bitrate in integer bits per second. Audio

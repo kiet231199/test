@@ -13,6 +13,7 @@ from media_checker.media import (
     _EncodedAnalysis,
     _FrameSummary,
     _PacketSummary,
+    _codec_level,
     _crop_text,
     _field_order,
     _reference_frames,
@@ -89,6 +90,38 @@ class EncodedAliasTests(unittest.TestCase):
 
 
 class CodecTraceTests(unittest.TestCase):
+    def test_codec_levels_use_matching_sps_values(self):
+        self.assertEqual(
+            _codec_level("h264", [
+                {"level_idc" : 41},
+                {"level_idc" : 41},
+            ]),
+            41,
+        )
+        self.assertEqual(
+            _codec_level("h264", [{
+                "level_idc"            : 11,
+                "constraint_set3_flag" : 1,
+            }]),
+            9,
+        )
+        self.assertEqual(
+            _codec_level("h264", [{
+                "level_idc"            : 11,
+                "constraint_set3_flag" : 0,
+            }]),
+            11,
+        )
+        self.assertEqual(
+            _codec_level("hevc", [{"general_level_idc" : 123}]),
+            123,
+        )
+        self.assertIsNone(_codec_level("h264", [{}]))
+        self.assertIsNone(_codec_level("h264", [
+            {"level_idc" : 40},
+            {"level_idc" : 41},
+        ]))
+
     def test_crop_handles_uncropped_conflicting_and_malformed_parameter_sets(self):
         uncropped = {
             "frame_cropping_flag" : 0,
@@ -293,6 +326,33 @@ class EncodedMetricTests(unittest.TestCase):
                     self.assertEqual(result.metrics["frame_count"].value, 10)
                     self.assertEqual(result.metrics["scan_type"].value, "progressive")
                     self.assertEqual(result.metrics["crop"].value, expected_crop)
+
+    def test_real_encoded_streams_report_sps_level(self):
+        cases = (
+            ("sample.264", "libx264", "h264"),
+            ("sample.265", "libx265", "hevc"),
+            ("sample-h264.mp4", "libx264", "mp4"),
+            ("sample-h265.mp4", "libx265", "mp4"),
+        )
+
+        for file_name, encoder, container_format in cases:
+            with self.subTest(file_name = file_name):
+                with tempfile.TemporaryDirectory() as folder:
+                    path = Path(folder) / file_name
+                    encode_container_video(path, encoder, container_format)
+                    descriptor = MediaDescriptor(
+                        path       = path,
+                        media_type = ENCODED_MEDIA_TYPE,
+                        extension  = path.suffix,
+                    )
+
+                    result = check(CheckRequest(
+                        input     = descriptor,
+                        reference = None,
+                        metrics   = ("level",),
+                    ))
+
+                    self.assertEqual(result.metrics["level"].value, "2.0")
 
     def test_frame_summary_uses_longest_observed_i_picture_groups(self):
         summary = _summarize_frames(
@@ -504,11 +564,12 @@ class EncodedMetricTests(unittest.TestCase):
                 result = check(CheckRequest(
                     input     = descriptor,
                     reference = None,
-                    metrics   = ("frame_count", "crop", "refframes"),
+                    metrics   = ("frame_count", "level", "crop", "refframes"),
                 ))
 
             self.assertEqual(result.status, "partial")
             self.assertEqual(result.metrics["frame_count"].value, 2)
+            self.assertEqual(result.metrics["level"].status, "error")
             self.assertEqual(result.metrics["crop"].status, "error")
             self.assertEqual(result.metrics["refframes"].status, "error")
 
