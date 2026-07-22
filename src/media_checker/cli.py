@@ -8,6 +8,7 @@ from media_checker.descriptors import load_descriptor
 from media_checker.errors import ConfigurationError
 from media_checker.metrics import METRIC_HANDLERS
 from media_checker.models import (
+    STATUS_ERROR,
     STATUS_SUCCESS,
     CheckRequest,
     CheckResult,
@@ -21,6 +22,8 @@ EXIT_SUCCESS       = 0
 EXIT_METRIC_FAILED = 1
 EXIT_CONFIGURATION = 2
 
+ANSI_GREEN  = "\033[32m"
+ANSI_RED    = "\033[31m"
 ANSI_YELLOW = "\033[33m"
 ANSI_RESET  = "\033[0m"
 HELP_MAX_POSITION = 16
@@ -102,6 +105,38 @@ def _color_usage_command(help_text: str) -> str:
         ANSI_RESET,
         help_text[command_end:],
     )
+
+
+def _status_text(status: str, stream) -> str:
+    if not _supports_color(stream):
+        return status
+
+    color = {
+        STATUS_SUCCESS : ANSI_GREEN,
+        STATUS_ERROR   : ANSI_RED,
+    }.get(status)
+
+    if color is None:
+        return status
+
+    return "{}{}{}".format(color, status, ANSI_RESET)
+
+
+def _print_short_result(result: CheckResult, file = None) -> None:
+    if file is None:
+        file = sys.stdout
+
+    for name, metric in result.metrics.items():
+        print(
+            "{}: {}".format(name, _status_text(metric.status, file)),
+            file = file,
+        )
+
+        if metric.status == STATUS_ERROR:
+            lines = str(metric.value or "").splitlines() or [""]
+
+            for line in lines:
+                print("  {}".format(line), file = file)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -193,6 +228,12 @@ def run(arguments: Optional[List[str]] = None) -> int:
         return EXIT_CONFIGURATION
     except OSError as error:
         print("Cannot write result '{}': {}".format(output, error), file = sys.stderr)
+        return EXIT_CONFIGURATION
+
+    try:
+        _print_short_result(result)
+    except OSError as error:
+        print("Cannot display result: {}".format(error), file = sys.stderr)
         return EXIT_CONFIGURATION
 
     if result.status == STATUS_SUCCESS:

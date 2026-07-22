@@ -78,6 +78,11 @@ media-check --input <descriptor> --check [<metric> ...]
 - The `media-check ...` portion of the usage line is yellow only when help is
   written to an interactive terminal.
 - Argument errors print the complete help followed by a capitalized error.
+- After successfully writing a metric result, the CLI prints each metric as
+  `<name>: success` or `<name>: error` in request order. Error messages follow
+  on lines indented by two spaces; successful values remain only in the result
+  file. Interactive terminals color `success` green and `error` red, while
+  redirected output has no ANSI codes.
 - Exit status `0` means every metric succeeded.
 - Exit status `1` means at least one requested metric failed.
 - Exit status `2` means the request, descriptor, or output configuration was

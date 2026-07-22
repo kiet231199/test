@@ -3,10 +3,11 @@ import io
 import os
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from fractions import Fraction
 from pathlib import Path
 from typing import Set
+from unittest.mock import patch
 
 import yaml
 
@@ -15,17 +16,29 @@ from media_checker.cli import (
     EXIT_CONFIGURATION,
     EXIT_METRIC_FAILED,
     EXIT_SUCCESS,
+    _print_short_result,
     build_parser,
     run,
 )
 from media_checker.errors import ConfigurationError
 from media_checker.metrics import METRIC_HANDLERS
-from media_checker.models import CheckRequest, MediaDescriptor, RAW_MEDIA_TYPE
+from media_checker.models import (
+    RAW_MEDIA_TYPE,
+    CheckRequest,
+    CheckResult,
+    MediaDescriptor,
+    MetricResult,
+)
 
 
 class TtyStringIO(io.StringIO):
     def isatty(self):
         return True
+
+
+class BrokenStringIO(io.StringIO):
+    def write(self, value):
+        raise OSError("stdout unavailable")
 
 
 def _raw_document(path: str = "input.raw"):
@@ -58,17 +71,22 @@ class CliTests(unittest.TestCase):
             descriptor.write_text(_raw_pair_document(), encoding = "utf-8")
             output = root / "result.yaml"
 
-            exit_status = run([
-                "-i", str(descriptor),
-                "-c", "psnr", "psnr",
-                "-o", str(output),
-            ])
+            console = io.StringIO()
+
+            with redirect_stdout(console):
+                exit_status = run([
+                    "-i", str(descriptor),
+                    "-c", "psnr", "psnr",
+                    "-o", str(output),
+                ])
             result = yaml.safe_load(output.read_text(encoding = "utf-8"))
 
             self.assertEqual(exit_status, EXIT_SUCCESS)
             self.assertEqual(result["status"], "success")
             self.assertEqual(list(result["metrics"]), ["psnr"])
             self.assertNotIn("schema_version", result)
+            self.assertEqual(console.getvalue(), "psnr: success\n")
+            self.assertNotIn("1000.0", console.getvalue())
 
     def test_cli_uses_default_output_and_reports_partial_result(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -81,10 +99,13 @@ class CliTests(unittest.TestCase):
 
             try:
                 os.chdir(root)
-                exit_status = run([
-                    "--input", str(descriptor),
-                    "--check", "width", "psnr",
-                ])
+                console = io.StringIO()
+
+                with redirect_stdout(console):
+                    exit_status = run([
+                        "--input", str(descriptor),
+                        "--check", "width", "psnr",
+                    ])
             finally:
                 os.chdir(previous_directory)
 
@@ -101,6 +122,10 @@ class CliTests(unittest.TestCase):
             self.assertEqual(result["metrics"]["psnr"]["value"], 1000.0)
             self.assertNotIn("error", result["metrics"]["width"])
             self.assertFalse((root / "metrics-result.yaml").exists())
+            self.assertEqual(
+                console.getvalue(),
+                "width: error\n  Unsupported metrics\npsnr: success\n",
+            )
 
     def test_cli_loads_reference_from_the_input_document(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -114,11 +139,12 @@ class CliTests(unittest.TestCase):
             )
             output = root / "result.yaml"
 
-            exit_status = run([
-                "--input", str(descriptor),
-                "--check", "psnr",
-                "--output", str(output),
-            ])
+            with redirect_stdout(io.StringIO()):
+                exit_status = run([
+                    "--input", str(descriptor),
+                    "--check", "psnr",
+                    "--output", str(output),
+                ])
             result = yaml.safe_load(output.read_text(encoding = "utf-8"))
 
             self.assertEqual(exit_status, EXIT_SUCCESS)
@@ -132,11 +158,12 @@ class CliTests(unittest.TestCase):
             descriptor.write_text(_raw_document(), encoding = "utf-8")
             output = root / "result.yaml"
 
-            exit_status = run([
-                "--input", str(descriptor),
-                "--check", "psnr",
-                "--output", str(output),
-            ])
+            with redirect_stdout(io.StringIO()):
+                exit_status = run([
+                    "--input", str(descriptor),
+                    "--check", "psnr",
+                    "--output", str(output),
+                ])
             result = yaml.safe_load(output.read_text(encoding = "utf-8"))
 
             self.assertEqual(exit_status, EXIT_METRIC_FAILED)
@@ -148,11 +175,14 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             output = Path(folder) / "result.yaml"
 
-            exit_status = run([
-                "--input", "unused.yaml",
-                "--check", "unknown",
-                "--output", str(output),
-            ])
+            console = io.StringIO()
+
+            with redirect_stdout(console):
+                exit_status = run([
+                    "--input", "unused.yaml",
+                    "--check", "unknown",
+                    "--output", str(output),
+                ])
             result = yaml.safe_load(output.read_text(encoding = "utf-8"))
 
             self.assertEqual(exit_status, EXIT_CONFIGURATION)
@@ -161,6 +191,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(result["metrics"], {})
             self.assertNotIn("schema_version", result)
             self.assertNotIn("code", result)
+            self.assertEqual(console.getvalue(), "")
 
     def test_metric_names_are_deduplicated_in_order(self):
         self.assertEqual(
@@ -177,17 +208,96 @@ class CliTests(unittest.TestCase):
             descriptor.write_text(_raw_pair_document(), encoding = "utf-8")
             output = root / "result.yaml"
 
-            exit_status = run([
-                "--input", str(descriptor),
-                "--check",
-                "--output", str(output),
-            ])
+            console = io.StringIO()
+
+            with redirect_stdout(console):
+                exit_status = run([
+                    "--input", str(descriptor),
+                    "--check",
+                    "--output", str(output),
+                ])
             result = yaml.safe_load(output.read_text(encoding = "utf-8"))
 
             self.assertEqual(exit_status, EXIT_METRIC_FAILED)
             self.assertEqual(list(result["metrics"]), list(METRIC_HANDLERS))
             self.assertEqual(result["metrics"]["width"]["status"], "error")
             self.assertEqual(result["metrics"]["psnr"]["status"], "success")
+            self.assertTrue(console.getvalue().startswith("width: error\n"))
+            self.assertTrue(console.getvalue().endswith("psnr: success\n"))
+
+    def test_short_result_colors_only_statuses_for_a_terminal(self):
+        result = CheckResult(
+            status = "partial",
+            metrics = {
+                "width" : MetricResult.success(16),
+                "level" : MetricResult.failure("first line\nsecond line"),
+            },
+        )
+        terminal_output = TtyStringIO()
+        redirected_output = io.StringIO()
+
+        _print_short_result(result, file = terminal_output)
+        _print_short_result(result, file = redirected_output)
+
+        self.assertEqual(
+            terminal_output.getvalue(),
+            "width: \x1b[32msuccess\x1b[0m\n"
+            "level: \x1b[31merror\x1b[0m\n"
+            "  first line\n"
+            "  second line\n",
+        )
+        self.assertEqual(
+            redirected_output.getvalue(),
+            "width: success\n"
+            "level: error\n"
+            "  first line\n"
+            "  second line\n",
+        )
+
+    def test_output_write_failure_does_not_print_short_result(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "input.raw").write_bytes(bytes(8))
+            (root / "reference.raw").write_bytes(bytes(8))
+            descriptor = root / "input.yaml"
+            descriptor.write_text(_raw_pair_document(), encoding = "utf-8")
+            console = io.StringIO()
+            errors = io.StringIO()
+
+            with patch(
+                "media_checker.cli.write_result",
+                side_effect = OSError("write failed"),
+            ), redirect_stdout(console), redirect_stderr(errors):
+                exit_status = run([
+                    "--input", str(descriptor),
+                    "--check", "psnr",
+                    "--output", str(root / "result.yaml"),
+                ])
+
+            self.assertEqual(exit_status, EXIT_CONFIGURATION)
+            self.assertEqual(console.getvalue(), "")
+            self.assertIn("Cannot write result", errors.getvalue())
+
+    def test_stdout_failure_preserves_written_result(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "input.raw").write_bytes(bytes(8))
+            (root / "reference.raw").write_bytes(bytes(8))
+            descriptor = root / "input.yaml"
+            descriptor.write_text(_raw_pair_document(), encoding = "utf-8")
+            output = root / "result.yaml"
+            errors = io.StringIO()
+
+            with redirect_stdout(BrokenStringIO()), redirect_stderr(errors):
+                exit_status = run([
+                    "--input", str(descriptor),
+                    "--check", "psnr",
+                    "--output", str(output),
+                ])
+
+            self.assertEqual(exit_status, EXIT_CONFIGURATION)
+            self.assertTrue(output.is_file())
+            self.assertIn("Cannot display result", errors.getvalue())
 
     def test_check_flag_itself_remains_required(self):
         error_output = io.StringIO()

@@ -170,6 +170,19 @@ metric errors.
 The removed `--reference/-r` option is an argument error. Argument errors print
 the complete help and exit with status `2`.
 
+After writing the result file, the command also prints a short summary in
+request order. Successful values remain in the result file and are omitted from
+the summary; metric errors include their indented message:
+
+```text
+width: success
+level: error
+  Metric 'level' is unavailable for the input media
+```
+
+On an interactive terminal, `success` is green and `error` is red. Redirected
+output does not contain ANSI color codes.
+
 ## Results
 
 Each requested metric has an independent result, so successful values remain
