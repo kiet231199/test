@@ -1,6 +1,7 @@
 import ast
 import io
 import os
+import signal
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -11,19 +12,23 @@ from unittest.mock import patch
 
 import yaml
 
-from media_checker.checker import check, normalize_metrics
+from media_checker.checker import CheckInterrupted, check, normalize_metrics
 from media_checker.cli import (
     EXIT_CONFIGURATION,
+    EXIT_INTERRUPTED,
     EXIT_METRIC_FAILED,
     EXIT_SUCCESS,
+    _InterruptSignals,
     _print_short_result,
     build_parser,
     run,
 )
-from media_checker.errors import ConfigurationError
+from media_checker.errors import ConfigurationError, MetricError
 from media_checker.metrics import METRIC_HANDLERS
 from media_checker.models import (
+    ENCODED_MEDIA_TYPE,
     RAW_MEDIA_TYPE,
+    STATUS_NOT_CHECKED,
     CheckRequest,
     CheckResult,
     MediaDescriptor,
@@ -39,6 +44,28 @@ class TtyStringIO(io.StringIO):
 class BrokenStringIO(io.StringIO):
     def write(self, value):
         raise OSError("stdout unavailable")
+
+
+class StubMetric:
+    def __init__(self, name, calls, interrupt = False, error = False):
+        self.name      = name
+        self.calls     = calls
+        self.interrupt = interrupt
+        self.error     = error
+
+    def supports(self, context):
+        return True
+
+    def calculate(self, context):
+        self.calls.append(self.name)
+
+        if self.interrupt:
+            raise KeyboardInterrupt
+
+        if self.error:
+            raise MetricError("{} failed".format(self.name))
+
+        return self.name
 
 
 def _raw_document(path: str = "input.raw"):
@@ -62,6 +89,167 @@ def _raw_pair_document():
 
 
 class CliTests(unittest.TestCase):
+    def test_checker_preserves_ordered_partial_results_when_interrupted(self):
+        descriptor = MediaDescriptor(
+            path        = Path("unused.raw"),
+            media_type  = RAW_MEDIA_TYPE,
+            extension   = ".raw",
+            width       = 4,
+            height      = 2,
+            framerate   = Fraction(24, 1),
+            format      = "GRAY8",
+            frame_count = 1,
+            stride      = 4,
+            sliceheight = 2,
+        )
+        metric_names = ("width", "height", "codec")
+
+        for interrupt_index in range(len(metric_names)):
+            with self.subTest(interrupt_index = interrupt_index):
+                calls = []
+                handlers = {
+                    name : StubMetric(
+                        name,
+                        calls,
+                        interrupt = index == interrupt_index,
+                    )
+                    for index, name in enumerate(metric_names)
+                }
+
+                with patch.dict(
+                    METRIC_HANDLERS,
+                    handlers,
+                    clear = True,
+                ), patch(
+                    "media_checker.checker.create_video_source",
+                    return_value = object(),
+                ):
+                    with self.assertRaises(CheckInterrupted) as raised:
+                        check(CheckRequest(
+                            input     = descriptor,
+                            reference = None,
+                            metrics   = metric_names,
+                        ))
+
+                result = raised.exception.result
+                self.assertEqual(list(result.metrics), list(metric_names))
+                self.assertEqual(calls, list(metric_names[:interrupt_index + 1]))
+                self.assertEqual(
+                    [
+                        result.metrics[name].status
+                        for name in metric_names
+                    ],
+                    (
+                        ["success"] * interrupt_index
+                        + [STATUS_NOT_CHECKED] * (len(metric_names) - interrupt_index)
+                    ),
+                )
+                self.assertTrue(all(
+                    result.metrics[name].value is None
+                    for name in metric_names[interrupt_index:]
+                ))
+                self.assertEqual(
+                    result.status,
+                    "failed" if interrupt_index == 0 else "partial",
+                )
+
+    def test_checker_preserves_completed_errors_when_interrupted(self):
+        descriptor = MediaDescriptor(
+            path       = Path("unused.264"),
+            media_type = ENCODED_MEDIA_TYPE,
+            extension  = ".264",
+        )
+        calls = []
+        handlers = {
+            "width" : StubMetric("width", calls, error = True),
+            "height" : StubMetric("height", calls, interrupt = True),
+            "codec" : StubMetric("codec", calls),
+        }
+
+        with patch.dict(
+            METRIC_HANDLERS,
+            handlers,
+            clear = True,
+        ), patch(
+            "media_checker.checker.create_video_source",
+            return_value = object(),
+        ):
+            with self.assertRaises(CheckInterrupted) as raised:
+                check(CheckRequest(
+                    input     = descriptor,
+                    reference = None,
+                    metrics   = ("width", "height", "codec"),
+                ))
+
+        result = raised.exception.result
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.metrics["width"].status, "error")
+        self.assertEqual(result.metrics["width"].value, "width failed")
+        self.assertEqual(result.metrics["height"].status, STATUS_NOT_CHECKED)
+        self.assertEqual(result.metrics["codec"].status, STATUS_NOT_CHECKED)
+
+    def test_cli_writes_partial_result_without_printing_unfinished_metrics(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "input.raw").write_bytes(bytes(8))
+            descriptor = root / "input.yaml"
+            descriptor.write_text(_raw_document(), encoding = "utf-8")
+            output = root / "result.yaml"
+            partial_result = CheckResult(
+                status = "partial",
+                metrics = {
+                    "width" : MetricResult.success(4),
+                    "height" : MetricResult.not_checked(),
+                },
+            )
+            console = io.StringIO()
+
+            with patch(
+                "media_checker.cli.check",
+                side_effect = CheckInterrupted(partial_result),
+            ), redirect_stdout(console), redirect_stderr(io.StringIO()):
+                exit_status = run([
+                    "--input", str(descriptor),
+                    "--check", "width", "height",
+                    "--output", str(output),
+                ])
+
+            serialized = yaml.safe_load(output.read_text(encoding = "utf-8"))
+            self.assertEqual(exit_status, EXIT_INTERRUPTED)
+            self.assertEqual(console.getvalue(), "width: success\n")
+            self.assertEqual(
+                serialized["metrics"]["height"],
+                {
+                    "status" : STATUS_NOT_CHECKED,
+                    "value"  : None,
+                },
+            )
+
+    def test_sigterm_uses_the_conventional_interrupted_exit_status(self):
+        interrupts = _InterruptSignals()
+
+        with self.assertRaises(KeyboardInterrupt):
+            interrupts._handle(signal.SIGTERM, None)
+
+        self.assertEqual(interrupts.exit_status, 128 + signal.SIGTERM)
+
+    def test_interrupt_signal_handlers_are_restored(self):
+        previous = {
+            signal_number : signal.getsignal(signal_number)
+            for signal_number in (signal.SIGINT, signal.SIGTERM)
+        }
+
+        with _InterruptSignals():
+            pass
+
+        self.assertEqual(
+            {
+                signal_number : signal.getsignal(signal_number)
+                for signal_number in (signal.SIGINT, signal.SIGTERM)
+            },
+            previous,
+        )
+
     def test_cli_accepts_a_direct_encoded_input_path(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

@@ -189,6 +189,13 @@ level: error
 On an interactive terminal, `success` is green and `error` is red. Redirected
 output does not contain ANSI color codes.
 
+If checking is interrupted with Ctrl+C/SIGINT or SIGTERM, completed metric
+results are retained. The active metric and every later metric are written with
+`status: not checked` and `value: null`; those unfinished metrics are omitted
+from the console summary. The command exits without an interruption message or
+traceback. SIGKILL cannot be handled or written because the operating system
+does not allow process cleanup.
+
 ## Results
 
 Each requested metric has an independent result, so successful values remain
@@ -210,7 +217,8 @@ configuration failures retain a top-level `error` field.
 
 Exit status `0` means every metric succeeded, `1` means at least one metric
 failed, and `2` means the command or descriptor configuration was invalid.
-An unsupported output suffix is a configuration error and does not create or
+Ctrl+C/SIGINT exits with status `130`; SIGTERM exits with status `143`. An
+unsupported output suffix is a configuration error and does not create or
 replace the requested path.
 
 ## Development

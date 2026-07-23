@@ -8,6 +8,7 @@ from unittest.mock import patch
 from media_checker.checker import check
 from media_checker.errors import MediaError
 from media_checker.media import EncodedVideoSource, RAW_FORMATS, VideoSource
+from media_checker.metrics import PsnrMetric
 from media_checker.models import (
     ENCODED_MEDIA_TYPE,
     STATUS_ERROR,
@@ -610,6 +611,54 @@ class FakeEncodedSource(VideoSource):
 
     def frames(self):
         return iter(())
+
+
+class InterruptingFrameIterator:
+    def __init__(self):
+        self.closed = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        raise KeyboardInterrupt
+
+    def close(self):
+        self.closed = True
+
+
+class InterruptingFrameSource(VideoSource):
+    def __init__(self, iterator):
+        descriptor = MediaDescriptor(
+            path       = Path("unused.264"),
+            media_type = ENCODED_MEDIA_TYPE,
+            extension  = ".264",
+        )
+        super().__init__(descriptor)
+        self.iterator = iterator
+
+    def metadata(self):
+        raise NotImplementedError
+
+    def frames(self):
+        return self.iterator
+
+
+class InterruptCleanupTests(unittest.TestCase):
+    def test_psnr_closes_both_frame_iterators_when_interrupted(self):
+        input_frames = InterruptingFrameIterator()
+        reference_frames = InterruptingFrameIterator()
+        metric = PsnrMetric()
+
+        with self.assertRaises(KeyboardInterrupt):
+            metric._calculate_frames(
+                InterruptingFrameSource(input_frames),
+                InterruptingFrameSource(reference_frames),
+                None,
+            )
+
+        self.assertTrue(input_frames.closed)
+        self.assertTrue(reference_frames.closed)
 
 
 if __name__ == "__main__":

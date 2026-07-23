@@ -246,11 +246,13 @@ class PsnrMetric(Metric):
         target_format = None
         compared_frames = 0
         frame_counts_match = True
+        input_frames = input_source.frames()
+        reference_frames = reference_source.frames()
 
         try:
             pairs = zip_longest(
-                input_source.frames(),
-                reference_source.frames(),
+                input_frames,
+                reference_frames,
                 fillvalue = missing,
             )
 
@@ -284,6 +286,8 @@ class PsnrMetric(Metric):
             raise MetricError("PSNR frame conversion failed: {}".format(error)) from error
         except MediaError as error:
             raise MetricError(str(error)) from error
+        finally:
+            _close_frame_iterators(input_frames, reference_frames)
 
         if (
             not frame_counts_match
@@ -303,6 +307,19 @@ class PsnrMetric(Metric):
             return INFINITE_PSNR_VALUE
 
         return round(minimum, PSNR_DECIMAL_PLACES)
+
+
+def _close_frame_iterators(*iterators) -> None:
+    for iterator in iterators:
+        close = getattr(iterator, "close", None)
+
+        if close is None:
+            continue
+
+        try:
+            close()
+        except Exception:
+            pass
 
 
 def _comparison_format(source: VideoSource, frame: av.VideoFrame) -> str:

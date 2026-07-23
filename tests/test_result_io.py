@@ -83,6 +83,28 @@ class ResultFormatTests(unittest.TestCase):
             self.assertEqual(output.read_text(encoding = "utf-8"), "preserve me")
             self.assertEqual(list(output.parent.glob(".result.yaml-*.tmp")), [])
 
+    def test_interrupted_write_removes_the_temporary_file(self):
+        result = CheckResult(
+            status = "success",
+            metrics = {
+                "codec" : MetricResult.success("h264"),
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / "result.json"
+            output.write_text("preserve me", encoding = "utf-8")
+
+            with patch(
+                "media_checker.result_io.json.dump",
+                side_effect = KeyboardInterrupt,
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    write_result(result, output)
+
+            self.assertEqual(output.read_text(encoding = "utf-8"), "preserve me")
+            self.assertEqual(list(output.parent.glob(".result.json-*.tmp")), [])
+
     def test_json_configuration_failure_uses_the_existing_result_schema(self):
         with tempfile.TemporaryDirectory() as folder:
             output = Path(folder) / "result.JSON"

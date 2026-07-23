@@ -65,7 +65,7 @@ def write_result(result: CheckResult, output_path: Path) -> None:
                 output_file.write("\n")
 
         os.replace(temporary_name, output_path)
-    except Exception:
+    except BaseException:
         try:
             os.unlink(temporary_name)
         except OSError:

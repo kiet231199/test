@@ -1,4 +1,4 @@
-from typing import Iterable, Tuple
+from typing import Dict, Iterable, Tuple
 
 from media_checker.errors import CheckerError, ConfigurationError
 from media_checker.media import create_video_source
@@ -14,6 +14,14 @@ from media_checker.models import (
 
 
 UNSUPPORTED_METRICS_MESSAGE = "Unsupported metrics"
+
+
+class CheckInterrupted(KeyboardInterrupt):
+    """A cancelled check with completed and unfinished metric results."""
+
+    def __init__(self, result: CheckResult):
+        super().__init__()
+        self.result = result
 
 
 def normalize_metrics(metric_names: Iterable[str]) -> Tuple[str, ...]:
@@ -38,38 +46,49 @@ def check(request: CheckRequest) -> CheckResult:
     """Calculate all requested metrics and retain independent failures."""
 
     metric_names = normalize_metrics(request.metrics)
-    input_source = create_video_source(request.input)
-    reference_source = None
+    results = {
+        metric_name : MetricResult.not_checked()
+        for metric_name in metric_names
+    }
 
-    if request.reference is not None:
-        reference_source = create_video_source(request.reference)
+    try:
+        input_source = create_video_source(request.input)
+        reference_source = None
 
-    context = MetricContext(
-        input_source      = input_source,
-        reference_source  = reference_source,
-        input_frame_limit = (
-            request.input.frame_count
-            if request.input.is_raw
-            else None
-        ),
-    )
-    results = {}
+        if request.reference is not None:
+            reference_source = create_video_source(request.reference)
 
-    for metric_name in metric_names:
-        handler = METRIC_HANDLERS[metric_name]
+        context = MetricContext(
+            input_source      = input_source,
+            reference_source  = reference_source,
+            input_frame_limit = (
+                request.input.frame_count
+                if request.input.is_raw
+                else None
+            ),
+        )
 
-        if not handler.supports(context):
-            results[metric_name] = MetricResult.failure(
-                UNSUPPORTED_METRICS_MESSAGE
-            )
-            continue
+        for metric_name in metric_names:
+            handler = METRIC_HANDLERS[metric_name]
 
-        try:
-            value = handler.calculate(context)
-            results[metric_name] = MetricResult.success(value)
-        except CheckerError as error:
-            results[metric_name] = MetricResult.failure(str(error))
+            if not handler.supports(context):
+                results[metric_name] = MetricResult.failure(
+                    UNSUPPORTED_METRICS_MESSAGE
+                )
+                continue
 
+            try:
+                value = handler.calculate(context)
+                results[metric_name] = MetricResult.success(value)
+            except CheckerError as error:
+                results[metric_name] = MetricResult.failure(str(error))
+    except KeyboardInterrupt as error:
+        raise CheckInterrupted(_check_result(results)) from error
+
+    return _check_result(results)
+
+
+def _check_result(results: Dict[str, MetricResult]) -> CheckResult:
     success_count = sum(
         result.status == STATUS_SUCCESS
         for result in results.values()

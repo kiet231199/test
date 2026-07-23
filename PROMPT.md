@@ -86,10 +86,15 @@ media-check --input <descriptor-or-encoded-media>
   on lines indented by two spaces; successful values remain only in the result
   file. Interactive terminals color `success` green and `error` red, while
   redirected output has no ANSI codes.
+- Ctrl+C/SIGINT and SIGTERM stop the active metric, retain completed results,
+  and mark the active and later metrics as `not checked` with a null value.
+  Not-checked metrics and interruption messages are omitted from console output.
 - Exit status `0` means every metric succeeded.
 - Exit status `1` means at least one requested metric failed.
 - Exit status `2` means the request, descriptor, or output configuration was
   invalid.
+- Exit status `130` means the command received SIGINT, and `143` means it
+  received SIGTERM. SIGKILL cannot be handled or serialized.
 
 # Descriptor contract
 
@@ -262,6 +267,18 @@ The overall status is `success`, `partial`, or `failed`. A request-level
 configuration failure uses `status: failed`, a top-level `error`, and an empty
 `metrics` mapping. Metric failures use `value`, not `error`, because their
 status is `error`.
+
+An interrupted metric and all later requested metrics use:
+
+```yaml
+height:
+  status: not checked
+  value: null
+```
+
+The overall status remains `success`, `partial`, or `failed`: at least one
+success plus an error or unfinished metric is `partial`, while zero successful
+metrics is `failed`.
 
 # Development workflow
 

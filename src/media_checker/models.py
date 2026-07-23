@@ -7,10 +7,11 @@ from typing import Any, Dict, Optional, Tuple
 RAW_MEDIA_TYPE     = "raw"
 ENCODED_MEDIA_TYPE = "encoded"
 
-STATUS_SUCCESS = "success"
-STATUS_PARTIAL = "partial"
-STATUS_FAILED  = "failed"
-STATUS_ERROR   = "error"
+STATUS_SUCCESS     = "success"
+STATUS_PARTIAL     = "partial"
+STATUS_FAILED      = "failed"
+STATUS_ERROR       = "error"
+STATUS_NOT_CHECKED = "not checked"
 
 
 @dataclass(frozen = True)
@@ -73,6 +74,10 @@ class MetricResult:
     @classmethod
     def failure(cls, message: str) -> "MetricResult":
         return cls(status = STATUS_ERROR, value = message)
+
+    @classmethod
+    def not_checked(cls) -> "MetricResult":
+        return cls(status = STATUS_NOT_CHECKED)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
