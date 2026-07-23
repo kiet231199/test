@@ -566,6 +566,14 @@ class HelpTests(unittest.TestCase):
         help_text = output.getvalue()
 
         self.assertIn("Usage: media-check", help_text)
+        self.assertIn(
+            "Inspect video metadata and stream structure; calculate PSNR",
+            help_text,
+        )
+        self.assertNotIn(
+            "Check metadata, stream structure, and PSNR for video",
+            help_text,
+        )
         self.assertIn("Options:", help_text)
         self.assertIn("-h, --help", help_text)
         self.assertIn("Show this help message and exit", help_text)

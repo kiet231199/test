@@ -192,7 +192,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = ArgumentParser(
         prog            = "media-check",
-        description     = "Check metadata, stream structure, and PSNR for video",
+        description     = (
+            "Inspect video metadata and stream structure; calculate PSNR"
+        ),
         add_help        = False,
         formatter_class = HelpFormatter,
     )
