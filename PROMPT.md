@@ -172,13 +172,17 @@ input:
   sliceheight: 96
 ```
 
-- Supported raw formats: `NV12`, `YUY2`, `RGB16`, `RGB`, `RGBA`, and `GRAY8`.
+- Supported raw formats: `I444`, `I420`, `YUY2`, `UYVY`, `YVYU`, `NV12`,
+  `GRAY8`, `RGB`, `BGR`, `ARGB`, `RGBA`, `ABGR`, `BGRA`, and `RGB16`.
 - When supplied, `framerate` must be a positive, canonical
   numerator/denominator string.
 - Dimensions and supplied frame count, stride, and slice height values must be
   positive integers.
 - Missing `stride` uses the format's tightly packed visible row size. Missing
   `sliceheight` uses the visible height.
+- For planar formats, `stride` and `sliceheight` describe the first/luma
+  plane. I444 uses the same geometry for all three planes, I420 halves both
+  values for U and V, and NV12 halves only the UV plane's slice height.
 - Raw dimensions and storage geometry must satisfy format alignment rules.
 - Raw file size must contain only complete frames for the effective storage
   geometry. A supplied frame count must not exceed the available complete

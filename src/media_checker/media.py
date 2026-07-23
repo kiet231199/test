@@ -457,6 +457,25 @@ class RawLayout:
     height      : int
     stride      : int
     sliceheight : int
+    planes      : Tuple[SourcePlane, ...]
+    frame_size  : int
+
+    @property
+    def visible_sample_count(self) -> int:
+        return sum(
+            plane.visible_row_bytes * plane.visible_rows
+            for plane in self.planes
+        )
+
+
+@dataclass(frozen = True)
+class RawPlane:
+    """Derive one stored plane from the first-plane raw geometry."""
+
+    row_bytes_numerator    : int = 1
+    row_bytes_denominator  : int = 1
+    stride_divisor         : int = 1
+    height_divisor         : int = 1
 
 
 @dataclass(frozen = True)
@@ -469,13 +488,21 @@ class RawFormat:
     bytes_per_pixel            : int
     width_alignment            : int = 1
     height_alignment           : int = 1
-    chroma_height_divisor      : Optional[int] = None
+    stride_alignment           : int = 1
+    sliceheight_alignment      : int = 1
     stored_height_numerator    : int = 1
     stored_height_denominator : int = 1
+    planes                     : Tuple[RawPlane, ...] = ()
 
     @property
     def has_chroma_plane(self) -> bool:
-        return self.chroma_height_divisor is not None
+        return len(self._planes()) > 1
+
+    def _planes(self) -> Tuple[RawPlane, ...]:
+        if self.planes:
+            return self.planes
+
+        return (RawPlane(row_bytes_numerator = self.bytes_per_pixel),)
 
     def validate(self, descriptor: MediaDescriptor) -> None:
         self.layout(descriptor)
@@ -530,11 +557,11 @@ class RawFormat:
         if sliceheight < height:
             raise ConfigurationError("Raw sliceheight must be at least height")
 
-        if self.has_chroma_plane and sliceheight % self.height_alignment != 0:
+        if sliceheight % self.sliceheight_alignment != 0:
             raise ConfigurationError(
                 "Raw format {} requires sliceheight aligned to {}".format(
                     self.name,
-                    self.height_alignment,
+                    self.sliceheight_alignment,
                 )
             )
 
@@ -548,79 +575,102 @@ class RawFormat:
                 )
             )
 
-        if self.has_chroma_plane and stride % self.width_alignment != 0:
+        if stride % self.stride_alignment != 0:
             raise ConfigurationError(
                 "Raw format {} requires stride aligned to {}".format(
                     self.name,
-                    self.width_alignment,
+                    self.stride_alignment,
                 )
             )
+
+        source_planes = []
+        offset = 0
+
+        for plane in self._planes():
+            row_bytes_product = width * plane.row_bytes_numerator
+
+            if row_bytes_product % plane.row_bytes_denominator != 0:
+                raise ConfigurationError(
+                    "Raw format {} has invalid plane row geometry".format(self.name)
+                )
+
+            if (
+                stride % plane.stride_divisor != 0
+                or height % plane.height_divisor != 0
+                or sliceheight % plane.height_divisor != 0
+            ):
+                raise ConfigurationError(
+                    "Raw format {} has invalid plane storage geometry".format(
+                        self.name
+                    )
+                )
+
+            plane_stride = stride // plane.stride_divisor
+            visible_rows = height // plane.height_divisor
+            stored_rows = sliceheight // plane.height_divisor
+            source_planes.append(SourcePlane(
+                offset            = offset,
+                stride            = plane_stride,
+                visible_row_bytes = (
+                    row_bytes_product // plane.row_bytes_denominator
+                ),
+                visible_rows      = visible_rows,
+            ))
+            offset += plane_stride * stored_rows
 
         return RawLayout(
             width       = width,
             height      = height,
             stride      = stride,
             sliceheight = sliceheight,
+            planes      = tuple(source_planes),
+            frame_size  = offset,
         )
 
     def source_planes(self, descriptor: MediaDescriptor) -> List[SourcePlane]:
-        layout = self.layout(descriptor)
-
-        if not self.has_chroma_plane:
-            return [
-                SourcePlane(
-                    offset            = 0,
-                    stride            = layout.stride,
-                    visible_row_bytes = layout.width * self.bytes_per_pixel,
-                    visible_rows      = layout.height,
-                )
-            ]
-
-        luma_size = layout.stride * layout.sliceheight
-        chroma_height_divisor = self.chroma_height_divisor
-
-        if chroma_height_divisor is None:
-            raise ConfigurationError(
-                "Raw format {} has no chroma-plane geometry".format(self.name)
-            )
-
-        return [
-            SourcePlane(
-                offset            = 0,
-                stride            = layout.stride,
-                visible_row_bytes = layout.width,
-                visible_rows      = layout.height,
-            ),
-            SourcePlane(
-                offset            = luma_size,
-                stride            = layout.stride,
-                visible_row_bytes = layout.width,
-                visible_rows      = layout.height // chroma_height_divisor,
-            ),
-        ]
+        return list(self.layout(descriptor).planes)
 
     def frame_size(self, descriptor: MediaDescriptor) -> int:
-        layout = self.layout(descriptor)
-
-        stored_luma_size = layout.stride * layout.sliceheight
-        return (
-            stored_luma_size
-            * self.stored_height_numerator
-            // self.stored_height_denominator
-        )
+        return self.layout(descriptor).frame_size
 
 
 RAW_FORMATS: Dict[str, RawFormat] = {
-    "NV12" : RawFormat(
-        name              = "NV12",
-        av_format         = "nv12",
+    "I444" : RawFormat(
+        name              = "I444",
+        av_format         = "yuv444p",
+        comparison_format = "yuv444p",
+        bytes_per_pixel   = 1,
+        stored_height_numerator = 3,
+        planes = (
+            RawPlane(),
+            RawPlane(),
+            RawPlane(),
+        ),
+    ),
+    "I420" : RawFormat(
+        name              = "I420",
+        av_format         = "yuv420p",
         comparison_format = "yuv420p",
         bytes_per_pixel   = 1,
         width_alignment   = 2,
         height_alignment  = 2,
-        chroma_height_divisor      = 2,
+        stride_alignment  = 2,
+        sliceheight_alignment = 2,
         stored_height_numerator    = 3,
         stored_height_denominator = 2,
+        planes = (
+            RawPlane(),
+            RawPlane(
+                row_bytes_denominator = 2,
+                stride_divisor        = 2,
+                height_divisor        = 2,
+            ),
+            RawPlane(
+                row_bytes_denominator = 2,
+                stride_divisor        = 2,
+                height_divisor        = 2,
+            ),
+        ),
     ),
     "YUY2" : RawFormat(
         name              = "YUY2",
@@ -629,11 +679,41 @@ RAW_FORMATS: Dict[str, RawFormat] = {
         bytes_per_pixel   = 2,
         width_alignment   = 2,
     ),
-    "RGB16" : RawFormat(
-        name              = "RGB16",
-        av_format         = "rgb565le",
-        comparison_format = "rgb24",
+    "UYVY" : RawFormat(
+        name              = "UYVY",
+        av_format         = "uyvy422",
+        comparison_format = "yuyv422",
         bytes_per_pixel   = 2,
+        width_alignment   = 2,
+    ),
+    "YVYU" : RawFormat(
+        name              = "YVYU",
+        av_format         = "yvyu422",
+        comparison_format = "yuyv422",
+        bytes_per_pixel   = 2,
+        width_alignment   = 2,
+    ),
+    "NV12" : RawFormat(
+        name              = "NV12",
+        av_format         = "nv12",
+        comparison_format = "yuv420p",
+        bytes_per_pixel   = 1,
+        width_alignment   = 2,
+        height_alignment  = 2,
+        stride_alignment  = 2,
+        sliceheight_alignment = 2,
+        stored_height_numerator    = 3,
+        stored_height_denominator = 2,
+        planes = (
+            RawPlane(),
+            RawPlane(height_divisor = 2),
+        ),
+    ),
+    "GRAY8" : RawFormat(
+        name              = "GRAY8",
+        av_format         = "gray",
+        comparison_format = "gray",
+        bytes_per_pixel   = 1,
     ),
     "RGB" : RawFormat(
         name              = "RGB",
@@ -641,17 +721,41 @@ RAW_FORMATS: Dict[str, RawFormat] = {
         comparison_format = "rgb24",
         bytes_per_pixel   = 3,
     ),
+    "BGR" : RawFormat(
+        name              = "BGR",
+        av_format         = "bgr24",
+        comparison_format = "rgb24",
+        bytes_per_pixel   = 3,
+    ),
+    "ARGB" : RawFormat(
+        name              = "ARGB",
+        av_format         = "argb",
+        comparison_format = "rgba",
+        bytes_per_pixel   = 4,
+    ),
     "RGBA" : RawFormat(
         name              = "RGBA",
         av_format         = "rgba",
         comparison_format = "rgba",
         bytes_per_pixel   = 4,
     ),
-    "GRAY8" : RawFormat(
-        name              = "GRAY8",
-        av_format         = "gray",
-        comparison_format = "gray",
-        bytes_per_pixel   = 1,
+    "ABGR" : RawFormat(
+        name              = "ABGR",
+        av_format         = "abgr",
+        comparison_format = "rgba",
+        bytes_per_pixel   = 4,
+    ),
+    "BGRA" : RawFormat(
+        name              = "BGRA",
+        av_format         = "bgra",
+        comparison_format = "rgba",
+        bytes_per_pixel   = 4,
+    ),
+    "RGB16" : RawFormat(
+        name              = "RGB16",
+        av_format         = "rgb565le",
+        comparison_format = "rgb24",
+        bytes_per_pixel   = 2,
     ),
 }
 

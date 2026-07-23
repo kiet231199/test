@@ -158,6 +158,30 @@ class DescriptorTests(unittest.TestCase):
                     self.assertIsNone(descriptor.stride)
                     self.assertIsNone(descriptor.sliceheight)
 
+    def test_raw_format_names_and_pyav_mappings_are_complete(self):
+        self.assertEqual(
+            {
+                name : raw_format.av_format
+                for name, raw_format in RAW_FORMATS.items()
+            },
+            {
+                "I444"  : "yuv444p",
+                "I420"  : "yuv420p",
+                "YUY2"  : "yuyv422",
+                "UYVY"  : "uyvy422",
+                "YVYU"  : "yvyu422",
+                "NV12"  : "nv12",
+                "GRAY8" : "gray",
+                "RGB"   : "rgb24",
+                "BGR"   : "bgr24",
+                "ARGB"  : "argb",
+                "RGBA"  : "rgba",
+                "ABGR"  : "abgr",
+                "BGRA"  : "bgra",
+                "RGB16" : "rgb565le",
+            },
+        )
+
     def test_old_flat_descriptor_is_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -277,10 +301,12 @@ class DescriptorTests(unittest.TestCase):
                     stride = width * raw_format.bytes_per_pixel
                     media_path = root / "input.raw"
 
-                    if raw_format.has_chroma_plane:
-                        size = stride * height * 3 // 2
-                    else:
-                        size = stride * height
+                    size = (
+                        stride
+                        * height
+                        * raw_format.stored_height_numerator
+                        // raw_format.stored_height_denominator
+                    )
 
                     media_path.write_bytes(bytes(size))
                     descriptor_path = root / "input.yaml"
@@ -301,6 +327,72 @@ class DescriptorTests(unittest.TestCase):
 
                     descriptor = load_descriptor(descriptor_path).input
                     self.assertEqual(descriptor.format, name)
+
+    def test_planar_raw_layouts_derive_plane_storage(self):
+        cases = {
+            "I444" : (
+                72,
+                3,
+                (
+                    (0, 8, 4, 2),
+                    (24, 8, 4, 2),
+                    (48, 8, 4, 2),
+                ),
+            ),
+            "I420" : (
+                48,
+                4,
+                (
+                    (0, 8, 4, 2),
+                    (32, 4, 2, 1),
+                    (40, 4, 2, 1),
+                ),
+            ),
+            "NV12" : (
+                48,
+                4,
+                (
+                    (0, 8, 4, 2),
+                    (32, 8, 4, 1),
+                ),
+            ),
+        }
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+
+            for name, (frame_size, sliceheight, expected_planes) in cases.items():
+                with self.subTest(raw_format = name):
+                    descriptor_path = root / (name + ".yaml")
+                    media_path = root / (name + ".raw")
+                    media_path.write_bytes(bytes(frame_size))
+                    descriptor_path.write_text(
+                        "\n".join([
+                            "input:",
+                            "  path: {}".format(media_path.name),
+                            "  width: 4",
+                            "  height: 2",
+                            "  format: {}".format(name.lower()),
+                            "  stride: 8",
+                            "  sliceheight: {}".format(sliceheight),
+                        ]),
+                        encoding = "utf-8",
+                    )
+
+                    descriptor = load_descriptor(descriptor_path).input
+                    layout = RAW_FORMATS[name].layout(descriptor)
+                    planes = tuple(
+                        (
+                            plane.offset,
+                            plane.stride,
+                            plane.visible_row_bytes,
+                            plane.visible_rows,
+                        )
+                        for plane in layout.planes
+                    )
+
+                    self.assertEqual(layout.frame_size, frame_size)
+                    self.assertEqual(planes, expected_planes)
 
     def test_invalid_descriptors_report_configuration_errors(self):
         cases = {

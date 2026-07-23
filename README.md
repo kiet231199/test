@@ -68,11 +68,14 @@ Supported media extensions are `.raw`, `.yuv`, `.264`, `.26l`, `.h264`,
 `.265` and `.h265` use the HEVC demuxer. Extension matching is
 case-insensitive.
 
-Supported raw formats are `NV12`, `YUY2`, `RGB16`, `RGB`, `RGBA`, and `GRAY8`.
-`stride` is the first plane's stored bytes per row, and `sliceheight` is the
-first plane's stored row count. When omitted, they default to tightly packed
-rows and the visible height. Supplied padding is removed before PSNR is
-calculated.
+Supported raw formats are `I444`, `I420`, `YUY2`, `UYVY`, `YVYU`, `NV12`,
+`GRAY8`, `RGB`, `BGR`, `ARGB`, `RGBA`, `ABGR`, `BGRA`, and `RGB16`. `stride`
+is the first plane's stored bytes per row, and `sliceheight` is the first
+plane's stored row count. I444 uses the same geometry for all three planes.
+I420 uses half stride and half slice height for its U and V planes. NV12 uses
+the first-plane stride and half slice height for its interleaved UV plane.
+When omitted, the values default to tightly packed rows and the visible
+height. Supplied padding is removed before PSNR is calculated.
 
 A raw file must contain only complete frames for its effective storage
 geometry. When `input.frame_count` is supplied, PSNR compares that many frames
