@@ -5,12 +5,12 @@ from fractions import Fraction
 from pathlib import Path
 from unittest.mock import patch
 
+import media_checker.psnr as psnr_module
 from media_checker.checker import check
 from media_checker.errors import MediaError
 from media_checker.media import (
     EncodedVideoSource,
     RAW_FORMATS,
-    RawVideoSource,
     VideoSource,
 )
 from media_checker.metrics import PsnrMetric
@@ -70,7 +70,7 @@ class RawMetricTests(unittest.TestCase):
                             float,
                         )
 
-    def test_direct_raw_adapters_preserve_logical_samples(self):
+    def test_native_raw_conversion_preserves_logical_samples(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             logical_y = bytes(range(1, 9))
@@ -193,8 +193,8 @@ class RawMetricTests(unittest.TestCase):
             )
 
             with patch(
-                "media_checker.psnr._NativeFrameComparator",
-                side_effect = AssertionError("direct path was not used"),
+                "media_checker.psnr.np.subtract",
+                side_effect = AssertionError("NumPy calculated raw PSNR"),
             ):
                 for input_name, reference_name in equivalent_pairs:
                     with self.subTest(
@@ -211,6 +211,136 @@ class RawMetricTests(unittest.TestCase):
                             result.metrics["psnr"].value,
                             1000.0,
                         )
+
+    def test_native_rawvideo_handles_tight_and_pixel_aligned_padding(self):
+        cases = (
+            ("tight", 6),
+            ("pixel-aligned-padding", 9),
+        )
+
+        for name, stride in cases:
+            with self.subTest(storage = name):
+                with tempfile.TemporaryDirectory() as folder:
+                    root = Path(folder)
+                    input_descriptor = raw_descriptor(
+                        root / "input.raw",
+                        raw_format = "RGB",
+                        width       = 2,
+                        height      = 2,
+                        stride      = stride,
+                        sliceheight = 2,
+                    )
+                    reference_descriptor = raw_descriptor(
+                        root / "reference.raw",
+                        raw_format = "RGB",
+                        width       = 2,
+                        height      = 2,
+                        stride      = stride,
+                        sliceheight = 2,
+                    )
+                    input_frame = bytearray(
+                        RAW_FORMATS["RGB"].frame_size(input_descriptor)
+                    )
+                    reference_frame = bytearray(input_frame)
+
+                    for row in range(2):
+                        start = row * stride
+                        pixels = bytes((
+                            1 + row,
+                            2 + row,
+                            3 + row,
+                            4 + row,
+                            5 + row,
+                            6 + row,
+                        ))
+                        input_frame[start:start + 6] = pixels
+                        reference_frame[start:start + 6] = pixels
+                        input_frame[start + 6:start + stride] = bytes(
+                            [11] * (stride - 6)
+                        )
+                        reference_frame[start + 6:start + stride] = bytes(
+                            [251] * (stride - 6)
+                        )
+
+                    write_raw_frames(input_descriptor, [bytes(input_frame)])
+                    write_raw_frames(
+                        reference_descriptor,
+                        [bytes(reference_frame)],
+                    )
+
+                    with patch(
+                        "media_checker.psnr.np.subtract",
+                        side_effect = AssertionError(
+                            "NumPy calculated raw PSNR"
+                        ),
+                    ), patch(
+                        "media_checker.psnr.np.copyto",
+                        side_effect = AssertionError(
+                            "pixel-aligned storage required a NumPy copy"
+                        ),
+                    ):
+                        result = check(CheckRequest(
+                            input     = input_descriptor,
+                            reference = reference_descriptor,
+                            metrics   = ("psnr",),
+                        ))
+
+                    self.assertEqual(result.metrics["psnr"].value, 1000.0)
+
+    def test_non_pixel_aligned_padding_only_uses_numpy_for_frame_copy(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            visible_row = bytes(index % 256 for index in range(210 * 3))
+            input_descriptor = raw_descriptor(
+                root / "input.raw",
+                raw_format = "RGB",
+                width       = 210,
+                height      = 2,
+                stride      = 640,
+                sliceheight = 2,
+            )
+            reference_descriptor = raw_descriptor(
+                root / "reference.raw",
+                raw_format = "RGB",
+                width       = 210,
+                height      = 2,
+                stride      = 640,
+                sliceheight = 2,
+            )
+            input_frame = (visible_row + bytes([11] * 10)) * 2
+            reference_frame = (visible_row + bytes([251] * 10)) * 2
+            write_raw_frames(input_descriptor, [input_frame])
+            write_raw_frames(reference_descriptor, [reference_frame])
+            copied = []
+
+            def record_copy(destination, source):
+                copied.append((destination.shape, source.shape))
+                destination[...] = source
+
+            with patch(
+                "media_checker.psnr.np.subtract",
+                side_effect = AssertionError("NumPy calculated raw PSNR"),
+            ), patch(
+                "media_checker.psnr._NumpyFrameComparator",
+                side_effect = AssertionError(
+                    "NumPy calculated PSNR instead of copying pixels"
+                ),
+            ), patch(
+                "media_checker.psnr.np.copyto",
+                side_effect = record_copy,
+            ):
+                result = check(CheckRequest(
+                    input     = input_descriptor,
+                    reference = reference_descriptor,
+                    metrics   = ("psnr",),
+                ))
+
+            self.assertEqual(result.metrics["psnr"].value, 1000.0)
+            self.assertEqual(len(copied), 2)
+            self.assertTrue(all(
+                destination == source == (2, 630)
+                for destination, source in copied
+            ))
 
     def test_native_cross_format_psnr_keeps_six_decimal_minimum(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -254,20 +384,29 @@ class RawMetricTests(unittest.TestCase):
             )
             write_raw_frames(input_descriptor, [bytes(8)])
             write_raw_frames(reference_descriptor, [bytes(24)])
-            original_frames = RawVideoSource.frames
-            opened = []
+            original_comparator_init = (
+                psnr_module._NumpyFrameComparator.__init__
+            )
+            original_next = psnr_module._NativeRawFrameReader.__next__
+            events = []
 
-            def counting_frames(source):
-                opened.append(source.descriptor.path)
-                return original_frames(source)
+            def record_comparator(comparator, target_format):
+                events.append("comparator")
+                original_comparator_init(comparator, target_format)
+
+            def record_frame(reader):
+                events.append("frame")
+                return original_next(reader)
 
             with patch(
                 "media_checker.psnr.av.filter.filters_available",
                 frozenset(),
-            ), patch.object(
-                RawVideoSource,
-                "frames",
-                counting_frames,
+            ), patch(
+                "media_checker.psnr._NumpyFrameComparator.__init__",
+                new = record_comparator,
+            ), patch(
+                "media_checker.psnr._NativeRawFrameReader.__next__",
+                new = record_frame,
             ):
                 result = check(CheckRequest(
                     input     = input_descriptor,
@@ -276,8 +415,8 @@ class RawMetricTests(unittest.TestCase):
                 ))
 
             self.assertEqual(result.metrics["psnr"].value, 1000.0)
-            self.assertEqual(opened.count(input_descriptor.path), 1)
-            self.assertEqual(opened.count(reference_descriptor.path), 1)
+            self.assertEqual(events[0], "comparator")
+            self.assertIn("frame", events)
 
     def test_yuy2_calculates_psnr_with_pinned_pyav(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -187,12 +187,14 @@ ignores raw storage padding, requires matching resolutions and frame counts,
 and reports the minimum frame value rounded to six decimals. Identical frames
 return `1000.0`.
 
-Compatible raw layouts are compared directly from memory-mapped files with
-bounded NumPy workers. This includes planar I420/NV12, packed 4:2:2 channel
-orders, I444, GRAY8, and the RGB/RGB16/alpha families. Other format pairings
-use the native FFmpeg PSNR filter through PyAV, including raw/encoded and
-encoded/encoded comparisons. If that filter cannot be configured, comparison
-falls back to the exact NumPy frame path before frame reading begins.
+Raw layouts whose stored stride represents whole pixels use PyAV's native
+FFmpeg rawvideo reader. FFmpeg crops row and slice-height padding, converts both
+sources to the reference comparison format, and calculates every pairing with
+its native PSNR filter. A packed stride that ends inside a pixel, such as
+RGB24 width 210 with stride 640, uses memory-mapped NumPy views only to copy
+visible rows into AVFrames before the same native crop/convert/PSNR path. If
+the filter cannot be configured, comparison falls back to the exact NumPy
+frame path before frame reading begins.
 
 For encoded input, the requested metric list is planned as one inspection
 session. Metadata, packet fields, decoded-frame statistics, and PSNR share one

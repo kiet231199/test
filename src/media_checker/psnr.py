@@ -1,10 +1,9 @@
 import gc
 import math
 import mmap
-import os
 import re
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from fractions import Fraction
 from typing import Iterable, Optional, Tuple, cast
 
@@ -12,14 +11,12 @@ import av
 import numpy as np
 
 from media_checker.errors import MediaError, MetricError
-from media_checker.media import RAW_FORMATS, RawLayout, VideoSource
+from media_checker.media import RAW_FORMATS, VideoSource
 from media_checker.models import VideoMetadata
 
 
 INFINITE_PSNR_VALUE = 1000.0
 PSNR_DECIMAL_PLACES = 6
-MAX_RAW_WORKERS = 8
-RAW_ACTIVE_MEMORY_BUDGET = 256 * 1024 * 1024
 
 PSNR_FILTER_LOCK = threading.RLock()
 PSNR_MINIMUM_PATTERN = re.compile(
@@ -31,21 +28,39 @@ RAW_COMPARISON_FORMATS = {
     for raw_format in RAW_FORMATS.values()
 }
 
-_YUV420_FORMATS = frozenset(("I420", "NV12"))
-_YUV422_FORMATS = frozenset(("YUY2", "UYVY", "YVYU"))
-_RGB_FORMATS = frozenset((
-    "RGB",
-    "BGR",
-    "RGB16",
-    "ARGB",
-    "RGBA",
-    "ABGR",
-    "BGRA",
-))
-
-
 class _NativePsnrSetupError(Exception):
     pass
+
+
+def _add_input_filters(
+    graph,
+    source,
+    crop: Optional[Tuple[int, int]],
+    target_format: str,
+):
+    current = source
+
+    if crop is not None:
+        crop_filter = graph.add(
+            "crop",
+            args = "w={}:h={}:x=0:y=0".format(crop[0], crop[1]),
+        )
+        current.link_to(crop_filter)
+        current = crop_filter
+
+    format_filter = graph.add(
+        "format",
+        args = "pix_fmts={}".format(target_format),
+    )
+    current.link_to(format_filter)
+    return format_filter
+
+
+@dataclass(frozen = True)
+class _FrameSpec:
+    visible_metadata : VideoMetadata
+    frame_metadata   : VideoMetadata
+    crop             : Optional[Tuple[int, int]] = None
 
 
 class _NativeFrameComparator:
@@ -56,6 +71,8 @@ class _NativeFrameComparator:
         input_metadata: VideoMetadata,
         reference_metadata: VideoMetadata,
         target_format: str,
+        input_crop: Optional[Tuple[int, int]] = None,
+        reference_crop: Optional[Tuple[int, int]] = None,
     ):
         self._closed = False
         self._lock_acquired = False
@@ -95,20 +112,22 @@ class _NativeFrameComparator:
             graph = av.filter.Graph()
             input_buffer = graph.add_buffer(template = input_template)
             reference_buffer = graph.add_buffer(template = reference_template)
-            input_format_filter = graph.add(
-                "format",
-                args = "pix_fmts={}".format(target_format),
+            input_format_filter = _add_input_filters(
+                graph,
+                input_buffer,
+                input_crop,
+                target_format,
             )
-            reference_format_filter = graph.add(
-                "format",
-                args = "pix_fmts={}".format(target_format),
+            reference_format_filter = _add_input_filters(
+                graph,
+                reference_buffer,
+                reference_crop,
+                target_format,
             )
             psnr_filter = graph.add("psnr")
             sink = graph.add("buffersink")
 
-            input_buffer.link_to(input_format_filter)
             input_format_filter.link_to(psnr_filter, 0, 0)
-            reference_buffer.link_to(reference_format_filter)
             reference_format_filter.link_to(psnr_filter, 0, 1)
             psnr_filter.link_to(sink)
             graph.configure()
@@ -234,6 +253,288 @@ class _NumpyFrameComparator:
         pass
 
 
+class _SourceFrameReader:
+    """Adapt a VideoSource frame iterator to the PSNR reader interface."""
+
+    def __init__(self, source: VideoSource):
+        self.source = source
+        self.spec = None  # type: Optional[_FrameSpec]
+        self._reader = None
+        self._frames = None
+
+    def open(self) -> _FrameSpec:
+        reader_factory = getattr(self.source, "frame_reader", None)
+
+        if reader_factory is None:
+            metadata = self.source.metadata()
+            self._frames = self.source.frames()
+        else:
+            self._reader = reader_factory()
+            metadata = self._reader.open()
+            self._frames = self._reader
+
+        self.spec = _FrameSpec(
+            visible_metadata = metadata,
+            frame_metadata   = metadata,
+        )
+        return self.spec
+
+    def __iter__(self) -> "_SourceFrameReader":
+        return self
+
+    def __next__(self) -> av.VideoFrame:
+        return next(self._frames)
+
+    def close(self) -> None:
+        _close_frame_iterators(self._frames)
+
+        if self._reader is not None:
+            self._reader.close()
+
+
+class _NativeRawFrameReader:
+    """Decode representable stored raw geometry with FFmpeg rawvideo."""
+
+    def __init__(
+        self,
+        source: VideoSource,
+        stored_width: int,
+        stored_height: int,
+    ):
+        self.source = source
+        self.raw_format = RAW_FORMATS[source.descriptor.format or ""]
+        self.stored_width = stored_width
+        self.stored_height = stored_height
+        self.spec = None  # type: Optional[_FrameSpec]
+        self._container = None
+        self._frames = None
+
+    def open(self) -> _FrameSpec:
+        visible_metadata = self.source.metadata()
+        frame_metadata = VideoMetadata(
+            width     = self.stored_width,
+            height    = self.stored_height,
+            framerate = visible_metadata.framerate,
+            format    = self.raw_format.av_format,
+        )
+        crop = None
+
+        if (
+            self.stored_width != visible_metadata.width
+            or self.stored_height != visible_metadata.height
+        ):
+            crop = (
+                visible_metadata.width,
+                visible_metadata.height,
+            )
+
+        options = {
+            "video_size" : "{}x{}".format(
+                self.stored_width,
+                self.stored_height,
+            ),
+            "pixel_format" : self.raw_format.av_format,
+        }
+
+        if visible_metadata.framerate is not None:
+            options["framerate"] = "{}/{}".format(
+                visible_metadata.framerate.numerator,
+                visible_metadata.framerate.denominator,
+            )
+
+        try:
+            with av.logging.Capture(local = True):
+                self._container = av.open(
+                    str(self.source.descriptor.path),
+                    mode    = "r",
+                    format  = "rawvideo",
+                    options = options,
+                )
+            stream = self._container.streams.video[0]
+            self._frames = iter(self._container.decode(stream))
+        except (OSError, av.FFmpegError) as error:
+            self.close()
+            raise MediaError(
+                "Cannot read raw media '{}': {}".format(
+                    self.source.descriptor.path,
+                    error,
+                )
+            ) from error
+
+        self.spec = _FrameSpec(
+            visible_metadata = visible_metadata,
+            frame_metadata   = frame_metadata,
+            crop             = crop,
+        )
+        return self.spec
+
+    def __iter__(self) -> "_NativeRawFrameReader":
+        return self
+
+    def __next__(self) -> av.VideoFrame:
+        try:
+            return next(self._frames)
+        except StopIteration:
+            raise
+        except (OSError, av.FFmpegError) as error:
+            raise MediaError(
+                "Cannot read raw media '{}': {}".format(
+                    self.source.descriptor.path,
+                    error,
+                )
+            ) from error
+
+    def close(self) -> None:
+        _close_frame_iterators(self._frames)
+        self._frames = None
+
+        if self._container is not None:
+            self._container.close()
+            self._container = None
+
+
+class _CopiedRawFrameReader:
+    """Copy visible raw rows into AVFrames when storage is not pixel-aligned."""
+
+    def __init__(self, source: VideoSource):
+        self.source = source
+        self.raw_format = RAW_FORMATS[source.descriptor.format or ""]
+        self.layout = self.raw_format.layout(source.descriptor)
+        self.spec = None  # type: Optional[_FrameSpec]
+        self._file = None
+        self._mapping = None
+        self._frame_index = 0
+
+    def open(self) -> _FrameSpec:
+        metadata = self.source.metadata()
+
+        try:
+            self._file = self.source.descriptor.path.open("rb")
+            self._mapping = mmap.mmap(
+                self._file.fileno(),
+                0,
+                access = mmap.ACCESS_READ,
+            )
+        except (OSError, ValueError) as error:
+            self.close()
+            raise MediaError(
+                "Cannot read raw media '{}': {}".format(
+                    self.source.descriptor.path,
+                    error,
+                )
+            ) from error
+
+        self.spec = _FrameSpec(
+            visible_metadata = metadata,
+            frame_metadata   = metadata,
+        )
+        return self.spec
+
+    def __iter__(self) -> "_CopiedRawFrameReader":
+        return self
+
+    def __next__(self) -> av.VideoFrame:
+        frame_offset = self._frame_index * self.layout.frame_size
+
+        if frame_offset >= len(self._mapping):
+            raise StopIteration
+
+        frame = av.VideoFrame(
+            self.layout.width,
+            self.layout.height,
+            self.raw_format.av_format,
+        )
+        frame.pts = self._frame_index
+        time_base = _time_base(
+            self.spec.visible_metadata.framerate
+        )
+
+        if time_base is not None:
+            frame.time_base = time_base
+
+        for source_plane, destination_plane in zip(
+            self.layout.planes,
+            frame.planes,
+        ):
+            if destination_plane.line_size < source_plane.visible_row_bytes:
+                raise MediaError(
+                    "PyAV plane stride is smaller than the visible raw row"
+                )
+
+            source = np.ndarray(
+                shape = (
+                    source_plane.visible_rows,
+                    source_plane.visible_row_bytes,
+                ),
+                dtype = np.uint8,
+                buffer = self._mapping,
+                offset = frame_offset + source_plane.offset,
+                strides = (source_plane.stride, 1),
+            )
+            destination = np.ndarray(
+                shape = source.shape,
+                dtype = np.uint8,
+                buffer = destination_plane,
+                strides = (destination_plane.line_size, 1),
+            )
+            np.copyto(destination, source)
+
+        self._frame_index += 1
+        return frame
+
+    def close(self) -> None:
+        if self._mapping is not None:
+            self._mapping.close()
+            self._mapping = None
+
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+
+
+def _create_frame_reader(
+    source: VideoSource,
+    force_copy_raw: bool = False,
+):
+    if not source.is_raw:
+        return _SourceFrameReader(source)
+
+    storage = None if force_copy_raw else _native_raw_storage(source)
+
+    if storage is None:
+        return _CopiedRawFrameReader(source)
+
+    return _NativeRawFrameReader(source, storage[0], storage[1])
+
+
+def _native_raw_storage(
+    source: VideoSource,
+) -> Optional[Tuple[int, int]]:
+    raw_format = RAW_FORMATS[source.descriptor.format or ""]
+    layout = raw_format.layout(source.descriptor)
+
+    if layout.stride % raw_format.bytes_per_pixel != 0:
+        return None
+
+    stored_width = layout.stride // raw_format.bytes_per_pixel
+    stored_height = layout.sliceheight
+
+    try:
+        video_format = av.VideoFormat(raw_format.av_format)
+        stored_bits = (
+            stored_width
+            * stored_height
+            * video_format.bits_per_pixel
+        )
+    except (AttributeError, ValueError):
+        return None
+
+    if stored_bits % 8 != 0 or stored_bits // 8 != layout.frame_size:
+        return None
+
+    return stored_width, stored_height
+
+
 class PsnrSession:
     """Consume input frames while comparing one reference stream exactly once."""
 
@@ -270,18 +571,11 @@ class PsnrSession:
         self._started = True
 
         try:
-            reader_factory = getattr(
-                self.reference_source,
-                "frame_reader",
-                None,
+            self._reference_reader = _create_frame_reader(
+                self.reference_source
             )
-
-            if reader_factory is None:
-                reference_metadata = self.reference_source.metadata()
-            else:
-                self._reference_reader = reader_factory()
-                reference_metadata = self._reference_reader.open()
-                self._reference_frames = self._reference_reader
+            reference_spec = self._reference_reader.open()
+            reference_metadata = reference_spec.visible_metadata
 
             _validate_metadata(
                 input_metadata,
@@ -297,14 +591,22 @@ class PsnrSession:
             try:
                 self._comparator = _NativeFrameComparator(
                     input_metadata,
-                    reference_metadata,
+                    reference_spec.frame_metadata,
                     target_format,
+                    reference_crop = reference_spec.crop,
                 )
             except _NativePsnrSetupError:
+                if reference_spec.crop is not None:
+                    self._reference_reader.close()
+                    self._reference_reader = _create_frame_reader(
+                        self.reference_source,
+                        force_copy_raw = True,
+                    )
+                    reference_spec = self._reference_reader.open()
+
                 self._comparator = _NumpyFrameComparator(target_format)
 
-            if self._reference_frames is None:
-                self._reference_frames = self.reference_source.frames()
+            self._reference_frames = self._reference_reader
         except KeyboardInterrupt:
             self.close()
             raise
@@ -419,22 +721,14 @@ def calculate_psnr(
     reference_source: VideoSource,
     frame_limit: Optional[int],
 ) -> float:
-    input_metadata = input_source.metadata()
-
-    if _can_compare_raw_direct(input_source, reference_source):
-        reference_metadata = reference_source.metadata()
-        _validate_metadata(
-            input_metadata,
-            reference_metadata,
-            input_is_raw = True,
-            reference_is_raw = True,
-        )
-        return _compare_raw_direct(
+    if input_source.is_raw:
+        return _calculate_reader_psnr(
             input_source,
             reference_source,
             frame_limit,
         )
 
+    input_metadata = input_source.metadata()
     session = PsnrSession(
         reference_source,
         frame_limit,
@@ -460,6 +754,165 @@ def calculate_psnr(
         raise
     finally:
         _close_frame_iterators(input_frames)
+
+
+def _calculate_reader_psnr(
+    input_source: VideoSource,
+    reference_source: VideoSource,
+    frame_limit: Optional[int],
+) -> float:
+    if input_source.is_raw and reference_source.is_raw:
+        _validate_metadata(
+            input_source.metadata(),
+            reference_source.metadata(),
+            input_is_raw = True,
+            reference_is_raw = True,
+        )
+
+    _validate_raw_frame_availability(
+        input_source,
+        reference_source,
+        frame_limit,
+    )
+    input_reader = _create_frame_reader(input_source)
+    reference_reader = _create_frame_reader(reference_source)
+    comparator = None
+
+    try:
+        input_spec = input_reader.open()
+        reference_spec = reference_reader.open()
+        _validate_metadata(
+            input_spec.visible_metadata,
+            reference_spec.visible_metadata,
+            input_is_raw = input_source.is_raw,
+            reference_is_raw = reference_source.is_raw,
+        )
+        target_format = comparison_format(
+            reference_source,
+            reference_spec.visible_metadata,
+        )
+
+        try:
+            comparator = _NativeFrameComparator(
+                input_spec.frame_metadata,
+                reference_spec.frame_metadata,
+                target_format,
+                input_crop     = input_spec.crop,
+                reference_crop = reference_spec.crop,
+            )
+        except _NativePsnrSetupError:
+            if input_spec.crop is not None:
+                input_reader.close()
+                input_reader = _create_frame_reader(
+                    input_source,
+                    force_copy_raw = True,
+                )
+                input_reader.open()
+
+            if reference_spec.crop is not None:
+                reference_reader.close()
+                reference_reader = _create_frame_reader(
+                    reference_source,
+                    force_copy_raw = True,
+                )
+                reference_reader.open()
+
+            comparator = _NumpyFrameComparator(target_format)
+
+        compared_frames = _compare_reader_frames(
+            input_reader,
+            reference_reader,
+            comparator,
+            frame_limit,
+        )
+
+        if compared_frames == 0:
+            raise MetricError("PSNR requires at least one decoded frame")
+
+        return comparator.finish()
+    except KeyboardInterrupt:
+        raise
+    except (MediaError, MetricError) as error:
+        raise _metric_error(error)
+    finally:
+        input_reader.close()
+        reference_reader.close()
+
+        if comparator is not None:
+            comparator.close()
+
+
+def _compare_reader_frames(
+    input_reader,
+    reference_reader,
+    comparator,
+    frame_limit: Optional[int],
+) -> int:
+    compared_frames = 0
+
+    while frame_limit is None or compared_frames < frame_limit:
+        try:
+            input_frame = next(input_reader)
+        except StopIteration:
+            if frame_limit is not None:
+                raise _frame_count_error()
+
+            try:
+                next(reference_reader)
+            except StopIteration:
+                break
+
+            raise _frame_count_error()
+
+        try:
+            reference_frame = next(reference_reader)
+        except StopIteration:
+            raise _frame_count_error()
+
+        comparator.compare(
+            input_frame,
+            reference_frame,
+            compared_frames,
+        )
+        compared_frames += 1
+
+    return compared_frames
+
+
+def _validate_raw_frame_availability(
+    input_source: VideoSource,
+    reference_source: VideoSource,
+    frame_limit: Optional[int],
+) -> None:
+    input_count = _raw_frame_count(input_source)
+    reference_count = _raw_frame_count(reference_source)
+
+    if input_count == 0 or reference_count == 0:
+        raise MetricError("PSNR requires at least one decoded frame")
+
+    if frame_limit is not None:
+        if (
+            input_count is not None
+            and input_count < frame_limit
+            or reference_count is not None
+            and reference_count < frame_limit
+        ):
+            raise _frame_count_error()
+    elif (
+        input_count is not None
+        and reference_count is not None
+        and input_count != reference_count
+    ):
+        raise _frame_count_error()
+
+
+def _raw_frame_count(source: VideoSource) -> Optional[int]:
+    if not source.is_raw:
+        return None
+
+    raw_format = RAW_FORMATS[source.descriptor.format or ""]
+    frame_size = raw_format.frame_size(source.descriptor)
+    return source.descriptor.path.stat().st_size // frame_size
 
 
 def comparison_format(
@@ -510,280 +963,6 @@ def frame_psnr(
     return 10.0 * math.log10((peak * peak) / mean_squared_error)
 
 
-def _compare_raw_direct(
-    input_source: VideoSource,
-    reference_source: VideoSource,
-    frame_limit: Optional[int],
-) -> float:
-    input_format = RAW_FORMATS[input_source.descriptor.format or ""]
-    reference_format = RAW_FORMATS[reference_source.descriptor.format or ""]
-    input_layout = input_format.layout(input_source.descriptor)
-    reference_layout = reference_format.layout(reference_source.descriptor)
-    input_count = (
-        input_source.descriptor.path.stat().st_size // input_layout.frame_size
-    )
-    reference_count = (
-        reference_source.descriptor.path.stat().st_size
-        // reference_layout.frame_size
-    )
-
-    if frame_limit is None:
-        if input_count != reference_count:
-            raise _frame_count_error()
-
-        compared_frames = input_count
-    else:
-        if input_count < frame_limit or reference_count < frame_limit:
-            raise _frame_count_error()
-
-        compared_frames = frame_limit
-
-    if compared_frames == 0:
-        raise MetricError("PSNR requires at least one decoded frame")
-
-    target_format = reference_format.comparison_format
-    sample_count = _logical_sample_count(
-        reference_layout,
-        reference_format.name,
-        target_format,
-    )
-    workers = _raw_worker_count(compared_frames, sample_count)
-
-    try:
-        with input_source.descriptor.path.open("rb") as input_file:
-            with reference_source.descriptor.path.open("rb") as reference_file:
-                with mmap.mmap(
-                    input_file.fileno(),
-                    0,
-                    access = mmap.ACCESS_READ,
-                ) as input_map:
-                    with mmap.mmap(
-                        reference_file.fileno(),
-                        0,
-                        access = mmap.ACCESS_READ,
-                    ) as reference_map:
-
-                        def compare_frame(frame_index: int) -> float:
-                            input_array = _logical_raw_frame(
-                                input_map,
-                                input_layout,
-                                input_format.name,
-                                target_format,
-                                frame_index,
-                            )
-                            reference_array = _logical_raw_frame(
-                                reference_map,
-                                reference_layout,
-                                reference_format.name,
-                                target_format,
-                                frame_index,
-                            )
-
-                            if input_array.shape != reference_array.shape:
-                                raise MetricError(
-                                    "PSNR converted frame shapes do not match"
-                                )
-
-                            difference = np.subtract(
-                                input_array,
-                                reference_array,
-                                dtype = np.int16,
-                            )
-                            squared_error = np.square(
-                                difference,
-                                dtype = np.int64,
-                            )
-                            error_sum = int(
-                                squared_error.sum(dtype = np.int64)
-                            )
-
-                            if error_sum == 0:
-                                return math.inf
-
-                            mean_squared_error = (
-                                error_sum / input_array.size
-                            )
-                            return 10.0 * math.log10(
-                                (255.0 * 255.0) / mean_squared_error
-                            )
-
-                        with ThreadPoolExecutor(
-                            max_workers = workers,
-                        ) as executor:
-                            minimum = min(executor.map(
-                                compare_frame,
-                                range(compared_frames),
-                            ))
-    except MetricError:
-        raise
-    except OSError as error:
-        raise MetricError(
-            "Cannot read raw media: {}".format(error)
-        ) from error
-
-    return _normalize_minimum(minimum)
-
-
-def _logical_raw_frame(
-    data,
-    layout: RawLayout,
-    format_name: str,
-    target_format: str,
-    frame_index: int,
-) -> np.ndarray:
-    frame_offset = frame_index * layout.frame_size
-    planes = [
-        _visible_plane(data, frame_offset, plane)
-        for plane in layout.planes
-    ]
-
-    if format_name == "I420" or format_name == "I444":
-        return np.concatenate([plane.reshape(-1) for plane in planes])
-
-    if format_name == "NV12":
-        chroma = planes[1].reshape(-1, 2)
-        return np.concatenate((
-            planes[0].reshape(-1),
-            chroma[:, 0],
-            chroma[:, 1],
-        ))
-
-    packed = planes[0].reshape(-1)
-
-    if format_name == "YUY2" or format_name == "GRAY8":
-        return packed
-
-    if format_name == "UYVY":
-        return packed.reshape(-1, 4)[:, (1, 0, 3, 2)].reshape(-1)
-
-    if format_name == "YVYU":
-        return packed.reshape(-1, 4)[:, (0, 3, 2, 1)].reshape(-1)
-
-    rgb = _raw_rgb(packed, format_name)
-
-    if target_format == "rgb24":
-        return rgb.reshape(-1)
-
-    if target_format == "rgba":
-        pixel_count = rgb.size // 3
-        rgba = np.empty((pixel_count, 4), dtype = np.uint8)
-        rgba[:, :3] = rgb.reshape(-1, 3)
-        rgba[:, 3] = _raw_alpha(packed, format_name, pixel_count)
-        return rgba.reshape(-1)
-
-    raise MetricError(
-        "PSNR direct raw conversion does not support '{}'".format(
-            target_format
-        )
-    )
-
-
-def _visible_plane(data, frame_offset: int, plane) -> np.ndarray:
-    return np.ndarray(
-        shape = (plane.visible_rows, plane.visible_row_bytes),
-        dtype = np.uint8,
-        buffer = data,
-        offset = frame_offset + plane.offset,
-        strides = (plane.stride, 1),
-    )
-
-
-def _raw_rgb(packed: np.ndarray, format_name: str) -> np.ndarray:
-    if format_name == "RGB":
-        return packed.reshape(-1, 3)
-
-    if format_name == "BGR":
-        return packed.reshape(-1, 3)[:, (2, 1, 0)]
-
-    if format_name == "RGB16":
-        values = np.ascontiguousarray(packed).view("<u2")
-        red = (values >> 11) & 31
-        green = (values >> 5) & 63
-        blue = values & 31
-        return np.stack((
-            (red << 3) | (red >> 2),
-            (green << 2) | (green >> 4),
-            (blue << 3) | (blue >> 2),
-        ), axis = 1).astype(np.uint8)
-
-    pixels = packed.reshape(-1, 4)
-    orders = {
-        "ARGB" : (1, 2, 3),
-        "RGBA" : (0, 1, 2),
-        "ABGR" : (3, 2, 1),
-        "BGRA" : (2, 1, 0),
-    }
-    return pixels[:, orders[format_name]]
-
-
-def _raw_alpha(
-    packed: np.ndarray,
-    format_name: str,
-    pixel_count: int,
-) -> np.ndarray:
-    alpha_indices = {
-        "ARGB" : 0,
-        "RGBA" : 3,
-        "ABGR" : 0,
-        "BGRA" : 3,
-    }
-    alpha_index = alpha_indices.get(format_name)
-
-    if alpha_index is None:
-        return np.full(pixel_count, 255, dtype = np.uint8)
-
-    return packed.reshape(-1, 4)[:, alpha_index]
-
-
-def _can_compare_raw_direct(
-    input_source: VideoSource,
-    reference_source: VideoSource,
-) -> bool:
-    if not input_source.is_raw or not reference_source.is_raw:
-        return False
-
-    input_name = input_source.descriptor.format or ""
-    reference_name = reference_source.descriptor.format or ""
-
-    return any(
-        input_name in family and reference_name in family
-        for family in (
-            _YUV420_FORMATS,
-            _YUV422_FORMATS,
-            frozenset(("I444",)),
-            frozenset(("GRAY8",)),
-            _RGB_FORMATS,
-        )
-    )
-
-
-def _logical_sample_count(
-    layout: RawLayout,
-    format_name: str,
-    target_format: str,
-) -> int:
-    if format_name in _RGB_FORMATS:
-        channels = 4 if target_format == "rgba" else 3
-        return layout.width * layout.height * channels
-
-    return layout.visible_sample_count
-
-
-def _raw_worker_count(frame_count: int, sample_count: int) -> int:
-    cpu_count = os.cpu_count() or 1
-    active_bytes_per_frame = max(sample_count * 12, 1)
-    budget_workers = max(
-        RAW_ACTIVE_MEMORY_BUDGET // active_bytes_per_frame,
-        1,
-    )
-    return max(min(
-        frame_count,
-        cpu_count,
-        MAX_RAW_WORKERS,
-        budget_workers,
-    ), 1)
-
-
 def _validate_metadata(
     input_metadata: VideoMetadata,
     reference_metadata: VideoMetadata,
@@ -818,6 +997,13 @@ def _template_frame(metadata: VideoMetadata, format_name: str) -> av.VideoFrame:
     frame.pts = 0
     frame.time_base = Fraction(1, 1)
     return frame
+
+
+def _time_base(framerate: Optional[Fraction]) -> Optional[Fraction]:
+    if framerate is None:
+        return None
+
+    return Fraction(framerate.denominator, framerate.numerator)
 
 
 def _minimum_from_logs(

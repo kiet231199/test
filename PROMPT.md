@@ -38,8 +38,8 @@ the parent repository.
   structures. These models form the reusable boundary for a future web API.
 - `media.py` defines raw-format geometry, the raw/encoded `VideoSource`
   implementations, and cached encoded-stream analysis backed by PyAV.
-- `psnr.py` owns PSNR path selection, logical raw-layout adapters, the bounded
-  threaded NumPy implementation, and the native FFmpeg-filter implementation.
+- `psnr.py` owns PSNR path selection, native rawvideo/crop adapters, the
+  non-pixel-aligned raw-copy path, and the native FFmpeg-filter implementation.
 - `metrics.py` contains metric implementations and the `METRIC_HANDLERS`
   registry. Its request context coordinates reusable encoded analysis and PSNR
   sessions.
@@ -268,14 +268,14 @@ Environment variable rules:
 - Encoded PSNR opens each input and reference source once. When structural
   metrics and PSNR are requested together, input frames feed both consumers
   during the same decode pass.
-- Compatible raw domains use memory-mapped logical-layout adapters and exact
-  `int16` differences with `int64` squared-error accumulation. This path covers
-  I420/NV12, the packed 4:2:2 orderings, I444, GRAY8, and RGB/RGB16/alpha
-  orderings without counting stored padding.
-- Direct raw work uses at most eight workers and a 256 MiB estimated active
-  array budget.
-- Other raw/raw and every raw/encoded or encoded/encoded pairing use PyAV's
-  native FFmpeg `psnr` filter with an explicit reference comparison format and
+- Raw layouts whose stored stride represents a whole number of pixels use
+  PyAV's native FFmpeg `rawvideo` reader. FFmpeg crops stored row and
+  slice-height padding before format conversion.
+- A packed raw stride that ends inside a pixel uses memory-mapped NumPy views
+  and `copyto` to copy only visible rows into AVFrames. NumPy does not calculate
+  PSNR on this path.
+- Every raw/raw, raw/encoded, and encoded/encoded pairing uses PyAV's native
+  FFmpeg `psnr` filter with an explicit reference comparison format and
   normalized frame timestamps. The final six-decimal `min` value is the
   reported metric.
 - If the native filter is unavailable or its graph cannot be configured, the
