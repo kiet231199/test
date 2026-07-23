@@ -24,7 +24,10 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("(3, 8) <= sys.version_info[:2] <= (3, 10)", setup)
         self.assertIn("-m venv", setup)
         self.assertIn("-m build", setup)
-        self.assertIn("pip install --force-reinstall", setup)
+        self.assertIn("--force-reinstall", setup)
+        self.assertEqual(setup.count("--quiet"), 3)
+        self.assertEqual(setup.count("--disable-pip-version-check"), 2)
+        self.assertEqual(setup.count("--progress-bar off"), 2)
         self.assertIn("source \"$project_root/.venv/bin/activate\"", setup)
         self.assertIn("_media_check_cleanup", setup)
 
@@ -138,7 +141,11 @@ exit "$status"
                     "VIRTUAL_ENV={}".format(project_root / ".venv"),
                     first.stdout,
                 )
-            self.assertIn("-m venv", log_path.read_text(encoding = "utf-8"))
+            setup_log = log_path.read_text(encoding = "utf-8")
+            self.assertIn("-m venv", setup_log)
+            self.assertEqual(setup_log.count("--quiet"), 3)
+            self.assertEqual(setup_log.count("--disable-pip-version-check"), 2)
+            self.assertEqual(setup_log.count("--progress-bar off"), 2)
             self._assert_build_outputs_removed(project_root)
 
             log_path.write_text("", encoding = "utf-8")

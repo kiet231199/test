@@ -88,13 +88,20 @@ _media_check_main() {
         fi
     fi
 
-    if ! "$venv_python" -m pip install --upgrade pip build; then
+    if ! "$venv_python" -m pip install \
+        --quiet \
+        --disable-pip-version-check \
+        --progress-bar off \
+        --upgrade pip build; then
         _media_check_cleanup "$project_root"
         _media_check_fail "Cannot install build tools"
         return 1
     fi
 
-    if ! "$venv_python" -m build --outdir "$project_root/dist" "$project_root"; then
+    if ! "$venv_python" -m build \
+        --outdir "$project_root/dist" \
+        "$project_root" \
+        --quiet; then
         _media_check_cleanup "$project_root"
         _media_check_fail "Cannot build media-checker"
         return 1
@@ -120,7 +127,11 @@ _media_check_main() {
         return 1
     fi
 
-    if ! "$venv_python" -m pip install --force-reinstall "$wheel_file"; then
+    if ! "$venv_python" -m pip install \
+        --quiet \
+        --disable-pip-version-check \
+        --progress-bar off \
+        --force-reinstall "$wheel_file"; then
         _media_check_cleanup "$project_root"
         _media_check_fail "Cannot install the media-checker wheel"
         return 1

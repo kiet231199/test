@@ -15,7 +15,9 @@ source ./setup.sh
 
 The script checks `python3`, creates or reuses a compatible `.venv`, builds and
 installs the wheel, removes generated build files, and leaves the virtual
-environment active. It never uses `sudo`.
+environment active. Successful installation keeps pip and build output quiet
+and prints only the final confirmation; failure diagnostics remain visible. It
+never uses `sudo`.
 
 If the script is executed instead of sourced, installation still completes,
 but activation cannot remain in the parent terminal:

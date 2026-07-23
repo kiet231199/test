@@ -291,8 +291,10 @@ source ./setup.sh
 
 `setup.sh` requires Python 3.8 through 3.10, creates or validates `.venv`,
 builds and installs the wheel, removes generated build output, and leaves the
-environment active when sourced. When executed normally, it installs the app
-and prints the activation command. It never deletes an incompatible `.venv`.
+environment active when sourced. Successful pip and build steps use quiet modes
+while retaining failure diagnostics. When executed normally, it installs the
+app and prints the activation command. It never deletes an incompatible
+`.venv`.
 
 The equivalent manual environment setup is:
 
