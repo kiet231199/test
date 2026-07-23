@@ -133,11 +133,12 @@ media-check \
 `--input/-i` is a combined descriptor or direct encoded-media path.
 `--check/-c` is optional and accepts zero or more metric names. Omitting the
 option or providing it without names checks every supported metric in the order
-shown by `--help`. `--output/-o` accepts only `.txt`, `.yaml`, or `.json` paths
-and defaults to `result.yaml` in the current directory. Extension matching is
-case-insensitive. TXT and YAML use the same ordered YAML representation;
-JSON uses an equivalent ordered, indented representation. Run
-`media-check --help` to see every supported metric.
+shown by `--help`. Help lists each metric with an aligned description and wraps
+description text after 60 characters. `--output/-o` accepts only `.txt`,
+`.yaml`, or `.json` paths and defaults to `result.yaml` in the current
+directory. Extension matching is case-insensitive. TXT and YAML use the same
+ordered YAML representation; JSON uses an equivalent ordered, indented
+representation.
 
 Raw input supports only `psnr`. Each other recognized metric produces an
 independent error with the value `Unsupported metrics`; this does not prevent a

@@ -19,6 +19,8 @@ from media_checker.cli import (
     EXIT_METRIC_FAILED,
     EXIT_SUCCESS,
     _InterruptSignals,
+    _METRIC_DESCRIPTIONS,
+    _format_metrics_help,
     _print_short_result,
     build_parser,
     run,
@@ -559,6 +561,101 @@ class CliTests(unittest.TestCase):
 
 
 class HelpTests(unittest.TestCase):
+    def test_metric_help_is_complete_aligned_and_wrapped(self):
+        expected_descriptions = {
+            "width"               : "Encoded video width in pixels",
+            "height"              : "Encoded video height in pixels",
+            "framerate"           : (
+                "Estimated displayed frame rate as numerator/denominator"
+            ),
+            "level"               : (
+                "H.264 or H.265 level signaled by the codec SPS"
+            ),
+            "profile"             : (
+                "Codec profile reported by the selected video stream"
+            ),
+            "codec"               : (
+                "Selected video codec normalized to h264 or h265"
+            ),
+            "bitrate"             : (
+                "Selected-video bitrate in bits per second, excluding audio "
+                "and container overhead"
+            ),
+            "gop"                 : (
+                "Largest observed I-picture group size in frames"
+            ),
+            "interval-intraframe" : (
+                "Largest presentation-order frame distance between adjacent "
+                "I pictures"
+            ),
+            "pframes"             : (
+                "P-picture count strictly inside the earliest longest "
+                "I-picture interval"
+            ),
+            "bframes"             : (
+                "B-picture count strictly inside the earliest longest "
+                "I-picture interval"
+            ),
+            "refframes"           : (
+                "Maximum SPS-signaled reference-picture capacity"
+            ),
+            "frame_count"         : (
+                "Number of completely decoded selected-video frames"
+            ),
+            "scan_type"           : (
+                "Scan type: progressive, interlace_tff, or interlace_bff"
+            ),
+            "crop"                : (
+                "SPS crop window in visible luma pixels as "
+                "left:right:top:bottom"
+            ),
+            "psnr"                : (
+                "Minimum per-frame PSNR between input and reference video"
+            ),
+        }
+
+        self.assertEqual(_METRIC_DESCRIPTIONS, expected_descriptions)
+        self.assertEqual(
+            tuple(_METRIC_DESCRIPTIONS),
+            tuple(METRIC_HANDLERS),
+        )
+
+        metric_lines = _format_metrics_help().splitlines()
+        name_width = max(len(name) for name in METRIC_HANDLERS)
+        description_start = len("  - ") + name_width + len(" : ")
+        rendered_descriptions = {}
+        rendered_name = None
+
+        for line in metric_lines:
+            self.assertEqual(line, line.rstrip())
+
+            if line.startswith("  - "):
+                self.assertEqual(line.index(":"), description_start - 2)
+                rendered_name = line[len("  - "):description_start - 3].rstrip()
+                rendered_descriptions[rendered_name] = []
+            else:
+                self.assertEqual(
+                    line[:description_start],
+                    " " * description_start,
+                )
+
+            description = line[description_start:]
+            self.assertLessEqual(len(description), 60)
+            self.assertFalse(description.endswith("-"))
+            rendered_descriptions[rendered_name].append(description)
+
+        self.assertEqual(
+            tuple(rendered_descriptions),
+            tuple(METRIC_HANDLERS),
+        )
+        self.assertEqual(
+            {
+                name : " ".join(lines)
+                for name, lines in rendered_descriptions.items()
+            },
+            expected_descriptions,
+        )
+
     def test_help_uses_expected_capitalization_layout_and_metrics(self):
         output = io.StringIO()
 

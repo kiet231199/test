@@ -3,6 +3,7 @@ import signal
 import sys
 import threading
 from pathlib import Path
+from textwrap import wrap
 from typing import Any, Dict, List, NoReturn, Optional
 
 from media_checker.checker import CheckInterrupted, check, normalize_metrics
@@ -32,6 +33,45 @@ ANSI_RED    = "\033[31m"
 ANSI_YELLOW = "\033[33m"
 ANSI_RESET  = "\033[0m"
 HELP_MAX_POSITION = 16
+_METRIC_DESCRIPTION_WIDTH = 60
+
+_METRIC_DESCRIPTIONS = {
+    "width"               : "Encoded video width in pixels",
+    "height"              : "Encoded video height in pixels",
+    "framerate"           : (
+        "Estimated displayed frame rate as numerator/denominator"
+    ),
+    "level"               : "H.264 or H.265 level signaled by the codec SPS",
+    "profile"             : "Codec profile reported by the selected video stream",
+    "codec"               : "Selected video codec normalized to h264 or h265",
+    "bitrate"             : (
+        "Selected-video bitrate in bits per second, excluding audio and "
+        "container overhead"
+    ),
+    "gop"                 : "Largest observed I-picture group size in frames",
+    "interval-intraframe" : (
+        "Largest presentation-order frame distance between adjacent I pictures"
+    ),
+    "pframes"             : (
+        "P-picture count strictly inside the earliest longest I-picture interval"
+    ),
+    "bframes"             : (
+        "B-picture count strictly inside the earliest longest I-picture interval"
+    ),
+    "refframes"           : "Maximum SPS-signaled reference-picture capacity",
+    "frame_count"         : (
+        "Number of completely decoded selected-video frames"
+    ),
+    "scan_type"           : (
+        "Scan type: progressive, interlace_tff, or interlace_bff"
+    ),
+    "crop"                : (
+        "SPS crop window in visible luma pixels as left:right:top:bottom"
+    ),
+    "psnr"                : (
+        "Minimum per-frame PSNR between input and reference video"
+    ),
+}
 
 
 class _InterruptSignals:
@@ -187,6 +227,29 @@ def _print_short_result(result: CheckResult, file = None) -> None:
                 print("  {}".format(line), file = file)
 
 
+def _format_metrics_help() -> str:
+    """Render registered metrics with aligned, word-wrapped descriptions."""
+
+    name_width = max(len(name) for name in METRIC_HANDLERS)
+    lines = []  # type: List[str]
+
+    for name in METRIC_HANDLERS:
+        prefix = "  - {} : ".format(name.ljust(name_width))
+        description_lines = wrap(
+            _METRIC_DESCRIPTIONS[name],
+            width                = _METRIC_DESCRIPTION_WIDTH,
+            break_long_words     = False,
+            break_on_hyphens     = False,
+        )
+        lines.append("{}{}".format(prefix, description_lines[0]))
+        lines.extend(
+            "{}{}".format(" " * len(prefix), description)
+            for description in description_lines[1:]
+        )
+
+    return "\n".join(lines)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the command-line interface without reading process arguments."""
 
@@ -216,10 +279,7 @@ def build_parser() -> argparse.ArgumentParser:
     metrics_help = (
         "Metrics to calculate. Omit the option or names to calculate all.\n"
         "Supported metrics:\n{}"
-    ).format("\n".join(
-        "  - {}".format(name)
-        for name in METRIC_HANDLERS
-    ))
+    ).format(_format_metrics_help())
     parser.add_argument(
         "-c",
         "--check",

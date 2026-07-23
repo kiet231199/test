@@ -76,8 +76,10 @@ media-check --input <descriptor-or-encoded-media>
   independent `Unsupported metrics` metric error.
 - Duplicate metric names are removed while preserving request order.
 - The removed `--reference` / `-r` option is an argument error.
-- Help lists every metric, capitalizes headings and messages, and formats option
-  aliases before one shared metavar.
+- Help describes the app as `Inspect video metadata and stream structure;
+  calculate PSNR`, lists every metric with aligned descriptions wrapped at 60
+  description characters, capitalizes headings and messages, and formats
+  option aliases before one shared metavar.
 - The `media-check ...` portion of the usage line is yellow only when help is
   written to an interactive terminal.
 - Argument errors print the complete help followed by a capitalized error.
