@@ -956,6 +956,11 @@ class EncodedVideoSource(VideoSource):
                 )
             ) from error
 
+    def frame_reader(self):
+        """Open metadata and decoded frames through one encoded container."""
+
+        return _EncodedFrameReader(self)
+
     def analysis(self) -> _EncodedAnalysis:
         if self._analysis is not None:
             return self._analysis
@@ -987,12 +992,18 @@ class EncodedVideoSource(VideoSource):
         )
         return self._analysis
 
-    def inspect(self, metric_names: Iterable[str]) -> _EncodedAnalysis:
+    def inspect(
+        self,
+        metric_names: Iterable[str],
+        frame_observer = None,
+    ) -> _EncodedAnalysis:
         """Inspect all requested packet and frame values in at most one pass."""
 
         requested = frozenset(metric_names)
 
         if (
+            frame_observer is None
+            and
             self._analysis is not None
             and requested.issubset(self._analysis_metrics)
         ):
@@ -1019,6 +1030,14 @@ class EncodedVideoSource(VideoSource):
                 codec_name = _codec_name(stream.codec_context)
                 self._metadata = _stream_metadata(stream)
                 stream_bitrate = _stream_bitrate(stream)
+
+                if frame_observer is not None:
+                    frame_observer.start(self._metadata)
+                    inspect_frames = bool(
+                        inspect_frames
+                        or frame_observer.accepts_frames
+                    )
+
                 trace_headers = bool(
                     requested & trace_metrics
                     or (
@@ -1042,6 +1061,7 @@ class EncodedVideoSource(VideoSource):
                         inspect_packets = inspect_packets,
                         inspect_frames  = inspect_frames,
                         trace_headers   = trace_headers,
+                        frame_observer  = frame_observer,
                     )
                 else:
                     packets = _PacketSummary(
@@ -1051,9 +1071,15 @@ class EncodedVideoSource(VideoSource):
                     frames  = _FrameSummary()
         except MediaError:
             raise
-        except (OSError, av.FFmpegError):
+        except (OSError, av.FFmpegError) as error:
+            if frame_observer is not None:
+                frame_observer.abort(error)
+
             packets = _PacketSummary()
             frames  = _FrameSummary()
+        finally:
+            if frame_observer is not None:
+                frame_observer.finish()
 
         self._analysis = _analysis_from_summaries(packets, frames)
         self._analysis_metrics = requested
@@ -1097,6 +1123,71 @@ class EncodedVideoSource(VideoSource):
         )
 
 
+class _EncodedFrameReader:
+    """One-open metadata and frame iterator for cross-source consumers."""
+
+    def __init__(self, source: EncodedVideoSource):
+        self.source = source
+        self.metadata = None  # type: Optional[VideoMetadata]
+        self._container = None
+        self._frames = None
+
+    def open(self) -> VideoMetadata:
+        try:
+            self._container = self.source._open()
+            stream = _supported_video_stream(
+                self._container,
+                self.source.descriptor.path,
+            )
+            self.metadata = _stream_metadata(stream)
+            self.source._metadata = self.metadata
+            self._frames = iter(self._container.decode(stream))
+            return self.metadata
+        except MediaError:
+            self.close()
+            raise
+        except (OSError, av.FFmpegError) as error:
+            self.close()
+            raise MediaError(
+                "Cannot decode encoded media '{}': {}".format(
+                    self.source.descriptor.path,
+                    error,
+                )
+            ) from error
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> av.VideoFrame:
+        try:
+            return next(self._frames)
+        except StopIteration:
+            raise
+        except (OSError, av.FFmpegError) as error:
+            raise MediaError(
+                "Cannot decode encoded media '{}': {}".format(
+                    self.source.descriptor.path,
+                    error,
+                )
+            ) from error
+
+    def close(self) -> None:
+        frames = self._frames
+        self._frames = None
+
+        if frames is not None:
+            close = getattr(frames, "close", None)
+
+            if close is not None:
+                close()
+
+        container = self._container
+        self._container = None
+
+        if container is not None:
+            container.close()
+
+
 def _inspect_packets(container, stream, codec_name: Optional[str]) -> _PacketSummary:
     packets, _ = _inspect_stream(
         container,
@@ -1116,6 +1207,7 @@ def _inspect_stream(
     inspect_packets: bool,
     inspect_frames: bool,
     trace_headers: bool,
+    frame_observer = None,
 ) -> Tuple[_PacketSummary, _FrameSummary]:
     stream_bitrate = _stream_bitrate(stream)
 
@@ -1177,9 +1269,18 @@ def _inspect_stream(
                         frame_valid = False
                         frame_types = []
                         interlaced  = []
+
+                        if frame_observer is not None:
+                            frame_observer.abort(
+                                MediaError("Cannot decode encoded media")
+                            )
+
                         continue
 
                     for frame in decoded_frames:
+                        if frame_observer is not None:
+                            frame_observer.consume(frame)
+
                         picture_type = getattr(frame.pict_type, "name", None)
                         frame_types.append(str(picture_type or frame.pict_type))
                         interlaced.append(bool(frame.interlaced_frame))

@@ -247,6 +247,77 @@ class EncodedMetricTests(unittest.TestCase):
 
                     self.assertEqual(opened, [path])
 
+    def test_psnr_shares_one_open_for_each_encoded_source(self):
+        metric_requests = (
+            ("psnr",),
+            (
+                "width",
+                "codec",
+                "bitrate",
+                "gop",
+                "refframes",
+                "frame_count",
+                "scan_type",
+                "crop",
+                "psnr",
+            ),
+        )
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            input_path = root / "input.264"
+            reference_path = root / "reference.264"
+            encode_elementary_video(
+                input_path,
+                "libx264",
+                "h264",
+                frame_count = 10,
+                width       = 18,
+                height      = 18,
+            )
+            encode_elementary_video(
+                reference_path,
+                "libx264",
+                "h264",
+                frame_count = 10,
+                width       = 18,
+                height      = 18,
+            )
+            input_descriptor = MediaDescriptor(
+                path       = input_path,
+                media_type = ENCODED_MEDIA_TYPE,
+                extension  = ".264",
+            )
+            reference_descriptor = MediaDescriptor(
+                path       = reference_path,
+                media_type = ENCODED_MEDIA_TYPE,
+                extension  = ".264",
+            )
+            original_open = EncodedVideoSource._open
+
+            for metrics in metric_requests:
+                with self.subTest(metrics = metrics):
+                    opened = []
+
+                    def counting_open(source):
+                        opened.append(source.descriptor.path)
+                        return original_open(source)
+
+                    with patch.object(
+                        EncodedVideoSource,
+                        "_open",
+                        counting_open,
+                    ):
+                        result = check(CheckRequest(
+                            input     = input_descriptor,
+                            reference = reference_descriptor,
+                            metrics   = metrics,
+                        ))
+
+                    self.assertEqual(result.status, "success")
+                    self.assertEqual(opened.count(input_path), 1)
+                    self.assertEqual(opened.count(reference_path), 1)
+
     def test_registry_exposes_all_new_metrics_with_expected_value_types(self):
         descriptor = MediaDescriptor(
             path       = Path("unused.265"),
