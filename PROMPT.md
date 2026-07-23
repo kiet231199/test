@@ -38,8 +38,11 @@ the parent repository.
   structures. These models form the reusable boundary for a future web API.
 - `media.py` defines raw-format geometry, the raw/encoded `VideoSource`
   implementations, and cached encoded-stream analysis backed by PyAV.
+- `psnr.py` owns PSNR path selection, logical raw-layout adapters, the bounded
+  threaded NumPy implementation, and the native FFmpeg-filter implementation.
 - `metrics.py` contains metric implementations and the `METRIC_HANDLERS`
-  registry.
+  registry. Its request context coordinates reusable encoded analysis and PSNR
+  sessions.
 - `checker.py` validates requested metric names and executes each metric while
   preserving independent successes and failures.
 - `result_io.py` writes YAML, TXT, and JSON result files atomically.
@@ -238,6 +241,8 @@ Environment variable rules:
   SPS crop windows make it unavailable.
 - PSNR compares visible pixels after removing raw stride and slice-height
   padding.
+- PSNR supports every input/reference pairing among all supported raw formats,
+  H.264/H.265 elementary streams, and supported MP4 video streams.
 - PSNR requires matching resolutions.
 - A supplied raw `input.frame_count` limits PSNR to that many frames. Both
   sources must provide at least that many frames, and additional frames are
@@ -251,6 +256,33 @@ Environment variable rules:
 - Identical frames return `1000.0` instead of infinity.
 - Each metric fails independently so valid metric values remain available when
   another metric fails.
+
+# Performance behavior
+
+- The checker plans encoded work from the complete requested metric list.
+  Metadata, packet inspection, header tracing, frame analysis, and input-side
+  PSNR observation share one source open and at most one demux/decode pass.
+- Packet-only requests do not decode frames. Frame-only requests do not enable
+  header tracing. Positive stream bitrate and codec-level metadata avoid a
+  packet scan when no requested metric needs one.
+- Encoded PSNR opens each input and reference source once. When structural
+  metrics and PSNR are requested together, input frames feed both consumers
+  during the same decode pass.
+- Compatible raw domains use memory-mapped logical-layout adapters and exact
+  `int16` differences with `int64` squared-error accumulation. This path covers
+  I420/NV12, the packed 4:2:2 orderings, I444, GRAY8, and RGB/RGB16/alpha
+  orderings without counting stored padding.
+- Direct raw work uses at most eight workers and a 256 MiB estimated active
+  array budget.
+- Other raw/raw and every raw/encoded or encoded/encoded pairing use PyAV's
+  native FFmpeg `psnr` filter with an explicit reference comparison format and
+  normalized frame timestamps. The final six-decimal `min` value is the
+  reported metric.
+- If the native filter is unavailable or its graph cannot be configured, the
+  exact NumPy frame path is selected before either frame iterator is consumed.
+- Tests verify one-open encoded requests and all 196 supported raw-format
+  pairings. Timing is intentionally not asserted because it depends on storage,
+  codecs, CPU count, and host load.
 
 # Result schema
 

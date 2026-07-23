@@ -179,6 +179,31 @@ example, a short stream with only one I picture can report `gop` and
 `frame_count` while `interval-intraframe`, `pframes`, and `bframes` report
 metric errors.
 
+### PSNR and performance
+
+PSNR supports every combination of the listed raw formats, H.264/H.265
+elementary streams, and supported MP4 video. It compares visible pixels,
+ignores raw storage padding, requires matching resolutions and frame counts,
+and reports the minimum frame value rounded to six decimals. Identical frames
+return `1000.0`.
+
+Compatible raw layouts are compared directly from memory-mapped files with
+bounded NumPy workers. This includes planar I420/NV12, packed 4:2:2 channel
+orders, I444, GRAY8, and the RGB/RGB16/alpha families. Other format pairings
+use the native FFmpeg PSNR filter through PyAV, including raw/encoded and
+encoded/encoded comparisons. If that filter cannot be configured, comparison
+falls back to the exact NumPy frame path before frame reading begins.
+
+For encoded input, the requested metric list is planned as one inspection
+session. Metadata, packet fields, decoded-frame statistics, and PSNR share one
+source open and at most one demux/decode pass. Packet-only checks avoid decode;
+frame-only checks avoid header tracing; signaled bitrate and level values avoid
+unneeded packet scans. Encoded PSNR also opens its reference once.
+
+Automated tests verify the one-open behavior and all 196 raw-format pairings.
+Elapsed time is not used as a test assertion because results vary with media,
+storage, codec, CPU count, and system load.
+
 The removed `--reference/-r` option is an argument error. Argument errors print
 the complete help and exit with status `2`.
 
