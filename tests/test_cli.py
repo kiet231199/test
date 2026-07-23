@@ -328,17 +328,25 @@ class CliTests(unittest.TestCase):
             self.assertTrue(output.is_file())
             self.assertIn("Cannot display result", errors.getvalue())
 
-    def test_check_flag_itself_remains_required(self):
-        error_output = io.StringIO()
+    def test_omitted_check_selects_every_metric_in_registry_order(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "input.raw").write_bytes(bytes(8))
+            (root / "reference.raw").write_bytes(bytes(8))
+            descriptor = root / "input.yaml"
+            descriptor.write_text(_raw_pair_document(), encoding = "utf-8")
+            output = root / "result.yaml"
 
-        with redirect_stderr(error_output):
-            with self.assertRaisesRegex(SystemExit, "2"):
-                run(["--input", "input.yaml"])
+            with redirect_stdout(io.StringIO()):
+                exit_status = run([
+                    "--input", str(descriptor),
+                    "--output", str(output),
+                ])
 
-        self.assertIn(
-            "Error: The following arguments are required",
-            error_output.getvalue(),
-        )
+            result = yaml.safe_load(output.read_text(encoding = "utf-8"))
+
+            self.assertEqual(exit_status, EXIT_METRIC_FAILED)
+            self.assertEqual(list(result["metrics"]), list(METRIC_HANDLERS))
 
     def test_core_checker_rejects_an_empty_metric_request(self):
         descriptor = MediaDescriptor(
@@ -375,7 +383,8 @@ class HelpTests(unittest.TestCase):
         self.assertIn("Show this help message and exit", help_text)
         self.assertIn("-i, --input INPUT", help_text)
         self.assertIn("-c, --check [METRIC ...]", help_text)
-        self.assertIn("omit names to calculate all", help_text)
+        self.assertIn("Omit the option or names to calculate all", help_text)
+        self.assertIn("[-c [METRIC ...]]", help_text)
         self.assertIn("-o, --output OUTPUT", help_text)
         self.assertNotIn("-i INPUT, --input INPUT", help_text)
 

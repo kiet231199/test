@@ -164,7 +164,8 @@ def build_parser() -> argparse.ArgumentParser:
         help     = "Descriptor or encoded media file to check",
     )
     metrics_help = (
-        "Metrics to calculate; omit names to calculate all. Supported metrics:\n{}"
+        "Metrics to calculate. Omit the option or names to calculate all.\n"
+        "Supported metrics:\n{}"
     ).format("\n".join(
         "  - {}".format(name)
         for name in METRIC_HANDLERS
@@ -172,7 +173,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-c",
         "--check",
-        required = True,
         nargs    = "*",
         metavar  = "METRIC",
         help     = metrics_help,

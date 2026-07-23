@@ -129,12 +129,11 @@ media-check \
 ```
 
 `--input/-i` is a combined descriptor or direct encoded-media path.
-`--check/-c` is required and
-accepts zero or more metric names. With no names it checks every supported
-metric in the order shown by `--help`. `--output/-o` accepts only `.txt`,
-`.yaml`, or `.json` paths and defaults to `result.yaml` in the current
-directory. Extension matching is case-insensitive. TXT and YAML use the same
-ordered YAML representation;
+`--check/-c` is optional and accepts zero or more metric names. Omitting the
+option or providing it without names checks every supported metric in the order
+shown by `--help`. `--output/-o` accepts only `.txt`, `.yaml`, or `.json` paths
+and defaults to `result.yaml` in the current directory. Extension matching is
+case-insensitive. TXT and YAML use the same ordered YAML representation;
 JSON uses an equivalent ordered, indented representation. Run
 `media-check --help` to see every supported metric.
 
