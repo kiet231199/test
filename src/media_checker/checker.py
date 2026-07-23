@@ -66,6 +66,7 @@ def check(request: CheckRequest) -> CheckResult:
                 if request.input.is_raw
                 else None
             ),
+            requested_metrics = metric_names,
         )
 
         for metric_name in metric_names:

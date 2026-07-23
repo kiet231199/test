@@ -2,6 +2,7 @@ import os
 import re
 import threading
 from abc import ABC, abstractmethod
+from contextlib import nullcontext
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -917,6 +918,7 @@ class EncodedVideoSource(VideoSource):
         super().__init__(descriptor)
         self._metadata: Optional[VideoMetadata] = None
         self._analysis: Optional[_EncodedAnalysis] = None
+        self._analysis_metrics = frozenset()  # type: FrozenSet[str]
 
     def metadata(self) -> VideoMetadata:
         if self._metadata is not None:
@@ -925,20 +927,7 @@ class EncodedVideoSource(VideoSource):
         try:
             with self._open() as container:
                 stream  = _supported_video_stream(container, self.descriptor.path)
-                context = stream.codec_context
-                codec_name = _codec_name(context)
-
-                pixel_format = getattr(context, "format", None)
-
-                self._metadata = VideoMetadata(
-                    width      = int(context.width),
-                    height     = int(context.height),
-                    framerate  = _encoded_framerate(stream, context),
-                    format     = getattr(pixel_format, "name", None),
-                    profile    = _profile_text(getattr(context, "profile", None)),
-                    level      = _optional_int(getattr(context, "level", None)),
-                    codec_name = codec_name,
-                )
+                self._metadata = _stream_metadata(stream)
                 return self._metadata
         except MediaError:
             raise
@@ -998,6 +987,78 @@ class EncodedVideoSource(VideoSource):
         )
         return self._analysis
 
+    def inspect(self, metric_names: Iterable[str]) -> _EncodedAnalysis:
+        """Inspect all requested packet and frame values in at most one pass."""
+
+        requested = frozenset(metric_names)
+
+        if (
+            self._analysis is not None
+            and requested.issubset(self._analysis_metrics)
+        ):
+            return self._analysis
+
+        trace_metrics = frozenset((
+            "refframes",
+            "scan_type",
+            "crop",
+        ))
+        frame_metrics = frozenset((
+            "gop",
+            "interval-intraframe",
+            "pframes",
+            "bframes",
+            "frame_count",
+            "scan_type",
+        ))
+        inspect_frames = bool(requested & frame_metrics)
+
+        try:
+            with self._open() as container:
+                stream     = _supported_video_stream(container, self.descriptor.path)
+                codec_name = _codec_name(stream.codec_context)
+                self._metadata = _stream_metadata(stream)
+                stream_bitrate = _stream_bitrate(stream)
+                trace_headers = bool(
+                    requested & trace_metrics
+                    or (
+                        "level" in requested
+                        and self._metadata.level is None
+                    )
+                )
+                inspect_packets = bool(
+                    trace_headers
+                    or (
+                        "bitrate" in requested
+                        and stream_bitrate is None
+                    )
+                )
+
+                if inspect_packets or inspect_frames:
+                    packets, frames = _inspect_stream(
+                        container,
+                        stream,
+                        codec_name,
+                        inspect_packets = inspect_packets,
+                        inspect_frames  = inspect_frames,
+                        trace_headers   = trace_headers,
+                    )
+                else:
+                    packets = _PacketSummary(
+                        bitrate = stream_bitrate,
+                        level   = self._metadata.level,
+                    )
+                    frames  = _FrameSummary()
+        except MediaError:
+            raise
+        except (OSError, av.FFmpegError):
+            packets = _PacketSummary()
+            frames  = _FrameSummary()
+
+        self._analysis = _analysis_from_summaries(packets, frames)
+        self._analysis_metrics = requested
+        return self._analysis
+
     def _packet_summary(self) -> _PacketSummary:
         try:
             with self._open() as container:
@@ -1037,12 +1098,26 @@ class EncodedVideoSource(VideoSource):
 
 
 def _inspect_packets(container, stream, codec_name: Optional[str]) -> _PacketSummary:
-    stream_bitrate = _positive_int(getattr(stream, "bit_rate", None))
+    packets, _ = _inspect_stream(
+        container,
+        stream,
+        codec_name,
+        inspect_packets = True,
+        inspect_frames  = False,
+        trace_headers   = True,
+    )
+    return packets
 
-    if stream_bitrate is None:
-        stream_bitrate = _positive_int(
-            getattr(stream.codec_context, "bit_rate", None)
-        )
+
+def _inspect_stream(
+    container,
+    stream,
+    codec_name: Optional[str],
+    inspect_packets: bool,
+    inspect_frames: bool,
+    trace_headers: bool,
+) -> Tuple[_PacketSummary, _FrameSummary]:
+    stream_bitrate = _stream_bitrate(stream)
 
     stream_duration = _duration(
         getattr(stream, "duration", None),
@@ -1053,11 +1128,18 @@ def _inspect_packets(container, stream, codec_name: Optional[str]) -> _PacketSum
     packet_duration  = Fraction(0, 1)
     complete_timing  = True
     parser           = _TraceHeaderParser(codec_name)
-    trace_valid      = "trace_headers" in av.bitstream_filters_available
+    trace_valid      = (
+        trace_headers
+        and "trace_headers" in av.bitstream_filters_available
+    )
     trace_filter     = None
+    frame_types = []
+    interlaced  = []
+    frame_valid = True
+    log_context = HEADER_TRACE_LOCK if trace_headers else nullcontext()
 
-    with HEADER_TRACE_LOCK:
-        previous_level = av.logging.get_level()
+    with log_context:
+        previous_level = av.logging.get_level() if trace_headers else None
 
         try:
             if trace_valid:
@@ -1074,23 +1156,40 @@ def _inspect_packets(container, stream, codec_name: Optional[str]) -> _PacketSum
                     trace_valid = False
 
             for packet in container.demux(stream):
-                if packet.size <= 0:
-                    continue
+                if inspect_packets and packet.size > 0:
+                    payload_size  += packet.size
+                    payload_count += 1
+                    duration = _duration(
+                        getattr(packet, "duration", None),
+                        getattr(packet, "time_base", None)
+                        or getattr(stream, "time_base", None),
+                    )
 
-                payload_size  += packet.size
-                payload_count += 1
-                duration = _duration(
-                    getattr(packet, "duration", None),
-                    getattr(packet, "time_base", None)
-                    or getattr(stream, "time_base", None),
-                )
+                    if duration is None:
+                        complete_timing = False
+                    else:
+                        packet_duration += duration
 
-                if duration is None:
-                    complete_timing = False
-                else:
-                    packet_duration += duration
+                if inspect_frames and frame_valid:
+                    try:
+                        decoded_frames = packet.decode()
+                    except (ValueError, OSError, av.FFmpegError):
+                        frame_valid = False
+                        frame_types = []
+                        interlaced  = []
+                        continue
 
-                if trace_valid and trace_filter is not None:
+                    for frame in decoded_frames:
+                        picture_type = getattr(frame.pict_type, "name", None)
+                        frame_types.append(str(picture_type or frame.pict_type))
+                        interlaced.append(bool(frame.interlaced_frame))
+
+                if (
+                    inspect_packets
+                    and packet.size > 0
+                    and trace_valid
+                    and trace_filter is not None
+                ):
                     try:
                         with av.logging.Capture(local = True) as logs:
                             trace_filter.filter(packet)
@@ -1098,7 +1197,8 @@ def _inspect_packets(container, stream, codec_name: Optional[str]) -> _PacketSum
                     except (ValueError, OSError, av.FFmpegError):
                         trace_valid = False
         finally:
-            av.logging.set_level(previous_level)
+            if trace_headers:
+                av.logging.set_level(previous_level)
 
     bitrate = stream_bitrate
 
@@ -1121,13 +1221,71 @@ def _inspect_packets(container, stream, codec_name: Optional[str]) -> _PacketSum
         field_order       = None
         field_order_count = 0
 
-    return _PacketSummary(
+    packet_summary = _PacketSummary(
         bitrate           = bitrate,
         level             = level,
         refframes         = refframes,
         crop              = crop,
         field_order       = field_order,
         field_order_count = field_order_count,
+    )
+    frame_summary = (
+        _summarize_frames(frame_types, interlaced)
+        if inspect_frames and frame_valid
+        else _FrameSummary()
+    )
+    return packet_summary, frame_summary
+
+
+def _stream_metadata(stream) -> VideoMetadata:
+    context      = stream.codec_context
+    pixel_format = getattr(context, "format", None)
+
+    return VideoMetadata(
+        width      = int(context.width),
+        height     = int(context.height),
+        framerate  = _encoded_framerate(stream, context),
+        format     = getattr(pixel_format, "name", None),
+        profile    = _profile_text(getattr(context, "profile", None)),
+        level      = _optional_int(getattr(context, "level", None)),
+        codec_name = _codec_name(context),
+    )
+
+
+def _stream_bitrate(stream) -> Optional[int]:
+    bitrate = _positive_int(getattr(stream, "bit_rate", None))
+
+    if bitrate is not None:
+        return bitrate
+
+    return _positive_int(getattr(stream.codec_context, "bit_rate", None))
+
+
+def _analysis_from_summaries(
+    packets: _PacketSummary,
+    frames: _FrameSummary,
+) -> _EncodedAnalysis:
+    if frames.scan_mode == "progressive":
+        scan_type = "progressive"
+    elif (
+        frames.scan_mode == "interlaced"
+        and packets.field_order_count == frames.frame_count
+    ):
+        scan_type = packets.field_order
+    else:
+        scan_type = None
+
+    return _EncodedAnalysis(
+        bitrate             = packets.bitrate,
+        level               = packets.level,
+        gop                 = frames.gop,
+        interval_intraframe = frames.interval_intraframe,
+        pframes             = frames.pframes,
+        bframes             = frames.bframes,
+        refframes           = packets.refframes,
+        frame_count         = frames.frame_count,
+        scan_type           = scan_type,
+        crop                = packets.crop,
     )
 
 

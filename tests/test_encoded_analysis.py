@@ -190,6 +190,63 @@ class CodecTraceTests(unittest.TestCase):
 
 
 class EncodedMetricTests(unittest.TestCase):
+    def test_each_encoded_request_opens_the_input_once(self):
+        metric_requests = (
+            ("width",),
+            ("level",),
+            ("bitrate",),
+            ("gop",),
+            ("scan_type",),
+            (
+                "width",
+                "codec",
+                "bitrate",
+                "gop",
+                "refframes",
+                "frame_count",
+                "scan_type",
+                "crop",
+            ),
+        )
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "sample.264"
+            encode_elementary_video(
+                path,
+                "libx264",
+                "h264",
+                frame_count = 10,
+                width       = 18,
+                height      = 18,
+            )
+            descriptor = MediaDescriptor(
+                path       = path,
+                media_type = ENCODED_MEDIA_TYPE,
+                extension  = ".264",
+            )
+            original_open = EncodedVideoSource._open
+
+            for metrics in metric_requests:
+                with self.subTest(metrics = metrics):
+                    opened = []
+
+                    def counting_open(source):
+                        opened.append(source.descriptor.path)
+                        return original_open(source)
+
+                    with patch.object(
+                        EncodedVideoSource,
+                        "_open",
+                        counting_open,
+                    ):
+                        check(CheckRequest(
+                            input     = descriptor,
+                            reference = None,
+                            metrics   = metrics,
+                        ))
+
+                    self.assertEqual(opened, [path])
+
     def test_registry_exposes_all_new_metrics_with_expected_value_types(self):
         descriptor = MediaDescriptor(
             path       = Path("unused.265"),

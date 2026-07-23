@@ -1,7 +1,7 @@
 import math
 from abc import ABC, abstractmethod
 from itertools import islice, zip_longest
-from typing import Dict, Optional, cast
+from typing import Dict, Optional, Tuple, cast
 
 import av
 import numpy as np
@@ -42,10 +42,37 @@ class MetricContext:
         input_source: VideoSource,
         reference_source: Optional[VideoSource],
         input_frame_limit: Optional[int],
+        requested_metrics: Tuple[str, ...] = (),
     ):
         self.input_source      = input_source
         self.reference_source  = reference_source
         self.input_frame_limit = input_frame_limit
+        self.requested_metrics = requested_metrics
+
+    def input_metadata(self):
+        if (
+            not self.input_source.is_raw
+            and any(
+                name in _ENCODED_ANALYSIS_METRICS
+                for name in self.requested_metrics
+            )
+        ):
+            source = cast(_EncodedAnalysisSource, self.input_source)
+            inspect = getattr(source, "inspect", None)
+
+            if inspect is not None:
+                inspect(self.requested_metrics)
+
+        return self.input_source.metadata()
+
+    def input_analysis(self):
+        source = cast(_EncodedAnalysisSource, self.input_source)
+        inspect = getattr(source, "inspect", None)
+
+        if inspect is not None:
+            return inspect(self.requested_metrics)
+
+        return source.analysis()
 
 
 class Metric(ABC):
@@ -65,7 +92,7 @@ class MetadataMetric(Metric):
     field_name = ""
 
     def calculate(self, context: MetricContext):
-        metadata = context.input_source.metadata()
+        metadata = context.input_metadata()
         value    = getattr(metadata, self.field_name)
 
         if value is None:
@@ -121,8 +148,7 @@ class EncodedAnalysisMetric(Metric):
     metric_name = ""
 
     def calculate(self, context: MetricContext):
-        source   = cast(_EncodedAnalysisSource, context.input_source)
-        analysis = source.analysis()
+        analysis = context.input_analysis()
         value    = getattr(analysis, self.field_name)
 
         if value is None:
@@ -182,12 +208,11 @@ class CropMetric(EncodedAnalysisMetric):
 
 class LevelMetric(Metric):
     def calculate(self, context: MetricContext) -> str:
-        metadata = context.input_source.metadata()
+        metadata = context.input_metadata()
         level    = metadata.level
 
         if level is None:
-            source = cast(_EncodedAnalysisSource, context.input_source)
-            level  = source.analysis().level
+            level = context.input_analysis().level
 
         if level is None:
             raise MetricError("Metric 'level' is unavailable for the input media")
@@ -405,3 +430,16 @@ METRIC_HANDLERS: Dict[str, Metric] = {
     "crop"                : CropMetric(),
     "psnr"                : PsnrMetric(),
 }
+
+_ENCODED_ANALYSIS_METRICS = frozenset((
+    "level",
+    "bitrate",
+    "gop",
+    "interval-intraframe",
+    "pframes",
+    "bframes",
+    "refframes",
+    "frame_count",
+    "scan_type",
+    "crop",
+))
