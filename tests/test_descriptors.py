@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from media_checker.descriptors import load_descriptor
+from media_checker.descriptors import load_descriptor, load_input
 from media_checker.errors import ConfigurationError
 from media_checker.media import RAW_FORMATS
 
@@ -35,6 +35,79 @@ def _minimal_raw_lines(
 
 
 class DescriptorTests(unittest.TestCase):
+    def test_direct_encoded_input_builds_an_input_only_descriptor(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+
+            for extension in (".264", ".26L", ".H264", ".265", ".H265", ".MP4"):
+                with self.subTest(extension = extension):
+                    media_path = root / ("input" + extension)
+                    media_path.write_bytes(b"encoded")
+
+                    descriptors = load_input(media_path)
+
+                    self.assertEqual(descriptors.input.path, media_path.resolve())
+                    self.assertEqual(
+                        descriptors.input.extension,
+                        extension.lower(),
+                    )
+                    self.assertFalse(descriptors.input.is_raw)
+                    self.assertIsNone(descriptors.reference)
+
+    def test_direct_raw_input_requires_a_descriptor(self):
+        with tempfile.TemporaryDirectory() as folder:
+            raw_path = Path(folder) / "input.YUV"
+            raw_path.write_bytes(bytes(12))
+
+            with self.assertRaisesRegex(
+                ConfigurationError,
+                "Raw media input requires a descriptor",
+            ):
+                load_input(raw_path)
+
+    def test_direct_encoded_input_resolves_from_the_working_directory(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            media_path = root / "input.264"
+            media_path.write_bytes(b"encoded")
+            previous_directory = Path.cwd()
+
+            try:
+                os.chdir(root)
+                descriptors = load_input(Path("input.264"))
+            finally:
+                os.chdir(previous_directory)
+
+            self.assertEqual(descriptors.input.path, media_path.resolve())
+
+    def test_missing_direct_encoded_input_is_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            missing_path = Path(folder) / "missing.H264"
+
+            with self.assertRaisesRegex(
+                ConfigurationError,
+                "Media file does not exist",
+            ):
+                load_input(missing_path)
+
+    def test_non_media_input_suffixes_remain_descriptor_compatible(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            media_path = root / "input.264"
+            media_path.write_bytes(b"encoded")
+
+            for name in ("input.yaml", "input.json", "input.txt", "input.yml", "input"):
+                with self.subTest(name = name):
+                    descriptor_path = root / name
+                    descriptor_path.write_text(
+                        "input:\n  path: input.264\n",
+                        encoding = "utf-8",
+                    )
+
+                    descriptors = load_input(descriptor_path)
+
+                    self.assertEqual(descriptors.input.path, media_path.resolve())
+
     def test_load_raw_descriptor_resolves_relative_path(self):
         with tempfile.TemporaryDirectory() as folder:
             root       = Path(folder)

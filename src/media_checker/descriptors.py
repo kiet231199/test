@@ -12,6 +12,7 @@ from media_checker.errors import ConfigurationError
 from media_checker.media import (
     ENCODED_VIDEO_EXTENSIONS,
     RAW_FORMATS,
+    RAW_VIDEO_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
     media_extension,
     validate_raw_file,
@@ -60,6 +61,30 @@ ENV_TOKEN_PATTERN = re.compile(r"\$\{([^{}]*)\}")
 class _EnvironmentValue:
     value          : Any
     system_derived : bool
+
+
+def load_input(input_path: Path) -> DescriptorSet:
+    """Load a descriptor document or synthesize one for encoded media."""
+
+    extension = media_extension(input_path)
+
+    if extension in ENCODED_VIDEO_EXTENSIONS:
+        path = input_path.resolve()
+
+        if not path.is_file():
+            raise ConfigurationError("Media file does not exist: '{}'".format(path))
+
+        return DescriptorSet(
+            input     = _encoded_descriptor(path, extension),
+            reference = None,
+        )
+
+    if extension in RAW_VIDEO_EXTENSIONS:
+        raise ConfigurationError(
+            "Raw media input requires a descriptor with width, height, and format"
+        )
+
+    return load_descriptor(input_path)
 
 
 def load_descriptor(descriptor_path: Path) -> DescriptorSet:
@@ -208,11 +233,7 @@ def _media_descriptor(
         raise ConfigurationError("Media file does not exist: '{}'".format(path))
 
     if extension in ENCODED_VIDEO_EXTENSIONS:
-        return MediaDescriptor(
-            path       = path,
-            media_type = ENCODED_MEDIA_TYPE,
-            extension  = extension,
-        )
+        return _encoded_descriptor(path, extension)
 
     descriptor = _raw_descriptor(
         path,
@@ -223,6 +244,14 @@ def _media_descriptor(
     )
     validate_raw_file(descriptor)
     return descriptor
+
+
+def _encoded_descriptor(path: Path, extension: str) -> MediaDescriptor:
+    return MediaDescriptor(
+        path       = path,
+        media_type = ENCODED_MEDIA_TYPE,
+        extension  = extension,
+    )
 
 
 def _field_value(

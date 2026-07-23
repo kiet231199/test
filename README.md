@@ -30,7 +30,8 @@ stops without deleting an incompatible environment.
 
 ## Descriptor
 
-One YAML descriptor contains the input and an optional PSNR reference:
+A YAML, JSON, or TXT descriptor contains the input and an optional PSNR
+reference:
 
 ```yaml
 env:
@@ -80,6 +81,11 @@ needed for PSNR.
 Absolute media paths are recommended. Relative paths are resolved from the
 directory containing the YAML descriptor.
 
+For encoded media, `--input/-i` can point directly to an H.264/H.265 elementary
+stream or supported MP4 file. This is equivalent to a descriptor containing
+only `input.path`, so no reference is available for PSNR. Direct raw input is
+not accepted because its width, height, and format must come from a descriptor.
+
 ### Environment variables
 
 `${NAME}` values may use letters, numbers, and underscores; the first character
@@ -122,7 +128,8 @@ media-check \
     --output result.yaml
 ```
 
-`--input/-i` is the combined YAML descriptor. `--check/-c` is required and
+`--input/-i` is a combined descriptor or direct encoded-media path.
+`--check/-c` is required and
 accepts zero or more metric names. With no names it checks every supported
 metric in the order shown by `--help`. `--output/-o` accepts only `.txt`,
 `.yaml`, or `.json` paths and defaults to `result.yaml` in the current

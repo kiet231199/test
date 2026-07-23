@@ -62,6 +62,35 @@ def _raw_pair_document():
 
 
 class CliTests(unittest.TestCase):
+    def test_cli_accepts_a_direct_encoded_input_path(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            media_path = root / "input.H264"
+            media_path.write_bytes(b"encoded")
+            output = root / "result.yaml"
+            checked_result = CheckResult(
+                status = "success",
+                metrics = {
+                    "width" : MetricResult.success(16),
+                },
+            )
+
+            with patch(
+                "media_checker.cli.check",
+                return_value = checked_result,
+            ) as check_mock, redirect_stdout(io.StringIO()):
+                exit_status = run([
+                    "--input", str(media_path),
+                    "--check", "width",
+                    "--output", str(output),
+                ])
+
+            request = check_mock.call_args.args[0]
+            self.assertEqual(exit_status, EXIT_SUCCESS)
+            self.assertEqual(request.input.path, media_path.resolve())
+            self.assertEqual(request.input.extension, ".h264")
+            self.assertIsNone(request.reference)
+
     def test_cli_writes_success_result_with_short_arguments(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

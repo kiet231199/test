@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import List, NoReturn, Optional
 
 from media_checker.checker import check, normalize_metrics
-from media_checker.descriptors import load_descriptor
+from media_checker.descriptors import load_input
 from media_checker.errors import ConfigurationError
 from media_checker.metrics import METRIC_HANDLERS
 from media_checker.models import (
@@ -161,7 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-i",
         "--input",
         required = True,
-        help     = "YAML descriptor for the media being checked",
+        help     = "Descriptor or encoded media file to check",
     )
     metrics_help = (
         "Metrics to calculate; omit names to calculate all. Supported metrics:\n{}"
@@ -205,7 +205,7 @@ def run(arguments: Optional[List[str]] = None) -> int:
     try:
         requested_metrics = args.check or tuple(METRIC_HANDLERS)
         metrics = normalize_metrics(requested_metrics)
-        descriptors = load_descriptor(Path(args.input))
+        descriptors = load_input(Path(args.input))
 
         result = check(CheckRequest(
             input     = descriptors.input,

@@ -57,7 +57,8 @@ media-check --input <descriptor> --check [<metric> ...]
             [--output <result>]
 ```
 
-- `--input` / `-i` is required and contains input plus optional reference media.
+- `--input` / `-i` is required and accepts a descriptor containing input plus
+  optional reference media, or a direct encoded-media path.
 - `--check` / `-c` is required and accepts zero or more metrics. With no metric
   names it checks every supported metric in registry order.
 - `--output` / `-o` defaults to `result.yaml`.
@@ -93,6 +94,9 @@ media-check --input <descriptor> --check [<metric> ...]
 Descriptors are YAML mappings with a required `input`, optional `reference`,
 and optional `env`. The former flat media descriptor is not supported. Media
 extensions and raw-format names are handled case-insensitively.
+
+YAML, JSON, and TXT descriptor files use the same YAML-compatible mapping
+syntax. Other descriptor suffixes remain accepted for compatibility.
 
 ```yaml
 env:
@@ -135,6 +139,11 @@ video produces a media error.
 `.264`, `.26l`, and `.h264` select the H.264 elementary-stream demuxer.
 `.265` and `.h265` select the HEVC demuxer. Extension matching is
 case-insensitive for both input and reference media.
+
+The CLI also accepts any supported encoded-media path directly. It is treated
+as an input-only descriptor with no reference, and a relative path is resolved
+from the current working directory. Direct `.raw` and `.yuv` input is rejected
+because raw width, height, and format require a descriptor.
 
 Recognized raw fields may be present for encoded media, but encoded metadata
 is read from the stream and those fields are ignored.
