@@ -14,14 +14,15 @@ class PackagingTests(unittest.TestCase):
     def test_supported_python_range_includes_python_3_10(self) -> None:
         pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
-        self.assertIn('requires-python = ">=3.8,<3.11"', pyproject)
+        self.assertIn('requires-python = ">=3.10,<3.11"', pyproject)
+        self.assertIn('"av==17.1.0"', pyproject)
 
     def test_setup_script_builds_installs_activates_and_cleans(self) -> None:
         setup_path = PROJECT_ROOT / "setup.sh"
         setup      = setup_path.read_text(encoding = "utf-8")
 
         self.assertTrue(setup.startswith("#!/usr/bin/env bash\n"))
-        self.assertIn("(3, 8) <= sys.version_info[:2] <= (3, 10)", setup)
+        self.assertIn("sys.version_info[:2] == (3, 10)", setup)
         self.assertIn("-m venv", setup)
         self.assertIn("-m build", setup)
         self.assertIn("--force-reinstall", setup)

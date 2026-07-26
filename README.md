@@ -7,7 +7,7 @@ results. It uses PyAV and NumPy directly and does not invoke `ffmpeg`,
 
 ## Automated setup
 
-The application supports CPython 3.8 through 3.10. From the project root, run:
+The application supports CPython 3.10. From the project root, run:
 
 ```bash
 source ./setup.sh
@@ -27,7 +27,7 @@ but activation cannot remain in the parent terminal:
 source .venv/bin/activate
 ```
 
-An existing `.venv` must contain a working Python 3.8, 3.9, or 3.10. The script
+An existing `.venv` must contain a working Python 3.10. The script
 stops without deleting an incompatible environment.
 
 ## Descriptor

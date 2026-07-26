@@ -130,8 +130,10 @@ def encode_container_video(
             stream.options = stream_options
 
         if interlaced:
-            stream.codec_context.interlaced_dct = True
-            stream.codec_context.interlaced_me  = True
+            stream.codec_context.flags |= (
+                av.codec.context.Flags.interlaced_dct
+                | av.codec.context.Flags.interlaced_me
+            )
 
         audio_stream = None
 

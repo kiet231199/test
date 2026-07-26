@@ -5,7 +5,7 @@ _media_check_is_sourced() {
 }
 
 _media_check_python_is_compatible() {
-    "$1" -c 'import sys; raise SystemExit(0 if (3, 8) <= sys.version_info[:2] <= (3, 10) else 1)'
+    "$1" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 10) else 1)'
 }
 
 _media_check_cleanup() {
@@ -72,13 +72,13 @@ _media_check_main() {
     }
 
     if ! _media_check_python_is_compatible "$base_python"; then
-        _media_check_fail "python3 must be version 3.8 through 3.10"
+        _media_check_fail "python3 must be version 3.10"
         return 1
     fi
 
     if [[ -e "$project_root/.venv" ]]; then
         if [[ ! -x "$venv_python" ]] || ! _media_check_python_is_compatible "$venv_python"; then
-            _media_check_fail ".venv is invalid or does not use Python 3.8 through 3.10; remove or rename it and run setup again"
+            _media_check_fail ".venv is invalid or does not use Python 3.10; remove or rename it and run setup again"
             return 1
         fi
     else

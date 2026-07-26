@@ -18,6 +18,7 @@ from media_checker.media import (
     _codec_level,
     _crop_text,
     _field_order,
+    _picture_type_name,
     _reference_frames,
     _summarize_frames,
 )
@@ -192,6 +193,11 @@ class CodecTraceTests(unittest.TestCase):
 
 
 class EncodedMetricTests(unittest.TestCase):
+    def test_integer_picture_types_are_normalized(self):
+        self.assertEqual(_picture_type_name(1), "I")
+        self.assertEqual(_picture_type_name(2), "P")
+        self.assertEqual(_picture_type_name(3), "B")
+
     def test_decoder_thread_budget_is_applied_before_decode(self):
         descriptor = MediaDescriptor(
             path       = Path("unused.264"),
@@ -524,7 +530,17 @@ class EncodedMetricTests(unittest.TestCase):
             with self.subTest(file_name = file_name):
                 with tempfile.TemporaryDirectory() as folder:
                     path = Path(folder) / file_name
-                    encode_container_video(path, encoder, container_format)
+                    options = (
+                        {"level" : "2.0"}
+                        if encoder == "libx264"
+                        else {"x265-params" : "level-idc=2.0"}
+                    )
+                    encode_container_video(
+                        path,
+                        encoder,
+                        container_format,
+                        options = options,
+                    )
                     descriptor = MediaDescriptor(
                         path       = path,
                         media_type = ENCODED_MEDIA_TYPE,

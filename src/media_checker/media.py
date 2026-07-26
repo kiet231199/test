@@ -1122,8 +1122,7 @@ class EncodedVideoSource(VideoSource):
                 interlaced  = []
 
                 for frame in container.decode(stream):
-                    picture_type = getattr(frame.pict_type, "name", None)
-                    frame_types.append(str(picture_type or frame.pict_type))
+                    frame_types.append(_picture_type_name(frame.pict_type))
                     interlaced.append(bool(frame.interlaced_frame))
 
                 return _summarize_frames(frame_types, interlaced)
@@ -1313,8 +1312,7 @@ def _inspect_stream(
                         if frame_observer is not None:
                             frame_observer.consume(frame)
 
-                        picture_type = getattr(frame.pict_type, "name", None)
-                        frame_types.append(str(picture_type or frame.pict_type))
+                        frame_types.append(_picture_type_name(frame.pict_type))
                         interlaced.append(bool(frame.interlaced_frame))
 
                 if (
@@ -1493,6 +1491,20 @@ def _summarize_frames(
         bframes             = bframes,
         scan_mode           = scan_mode,
     )
+
+
+def _picture_type_name(picture_type) -> str:
+    """Normalize PyAV enum and integer picture-type representations."""
+
+    name = getattr(picture_type, "name", None)
+
+    if name is not None:
+        return str(name)
+
+    try:
+        return str(av.video.frame.PictureType(picture_type).name)
+    except (AttributeError, TypeError, ValueError):
+        return str(picture_type)
 
 
 def _supported_video_stream(container, path: Path):
