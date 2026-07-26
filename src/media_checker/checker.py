@@ -4,6 +4,7 @@ from media_checker.errors import CheckerError, ConfigurationError
 from media_checker.media import create_video_source
 from media_checker.metrics import METRIC_HANDLERS, MetricContext
 from media_checker.models import (
+    DECODER_THREAD_BUDGETS,
     STATUS_FAILED,
     STATUS_PARTIAL,
     STATUS_SUCCESS,
@@ -42,21 +43,39 @@ def normalize_metrics(metric_names: Iterable[str]) -> Tuple[str, ...]:
     return tuple(metrics)
 
 
+def decoder_thread_budget(effort: str) -> int:
+    """Map a public effort level to PyAV's decoder thread count."""
+
+    if not isinstance(effort, str) or effort not in DECODER_THREAD_BUDGETS:
+        raise ConfigurationError(
+            "Unsupported effort '{}'".format(effort)
+        )
+
+    return DECODER_THREAD_BUDGETS[effort]
+
+
 def check(request: CheckRequest) -> CheckResult:
     """Calculate all requested metrics and retain independent failures."""
 
     metric_names = normalize_metrics(request.metrics)
+    decoder_threads = decoder_thread_budget(request.effort)
     results = {
         metric_name : MetricResult.not_checked()
         for metric_name in metric_names
     }
 
     try:
-        input_source = create_video_source(request.input)
+        input_source = create_video_source(
+            request.input,
+            decoder_threads = decoder_threads,
+        )
         reference_source = None
 
         if request.reference is not None:
-            reference_source = create_video_source(request.reference)
+            reference_source = create_video_source(
+                request.reference,
+                decoder_threads = decoder_threads,
+            )
 
         context = MetricContext(
             input_source      = input_source,

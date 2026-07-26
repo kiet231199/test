@@ -22,7 +22,11 @@ from typing import (
 import av
 
 from media_checker.errors import ConfigurationError, MediaError
-from media_checker.models import MediaDescriptor, VideoMetadata
+from media_checker.models import (
+    DEFAULT_DECODER_THREADS,
+    MediaDescriptor,
+    VideoMetadata,
+)
 
 
 RAW_VIDEO_EXTENSIONS        = (".raw", ".yuv")
@@ -914,8 +918,13 @@ class RawVideoSource(VideoSource):
 class EncodedVideoSource(VideoSource):
     """Read H.264 or H.265 video from elementary streams or MP4."""
 
-    def __init__(self, descriptor: MediaDescriptor):
+    def __init__(
+        self,
+        descriptor: MediaDescriptor,
+        decoder_threads: int = DEFAULT_DECODER_THREADS,
+    ):
         super().__init__(descriptor)
+        self.decoder_threads = decoder_threads
         self._metadata: Optional[VideoMetadata] = None
         self._analysis: Optional[_EncodedAnalysis] = None
         self._analysis_metrics = frozenset()  # type: FrozenSet[str]
@@ -926,7 +935,7 @@ class EncodedVideoSource(VideoSource):
 
         try:
             with self._open() as container:
-                stream  = _supported_video_stream(container, self.descriptor.path)
+                stream  = self._video_stream(container)
                 self._metadata = _stream_metadata(stream)
                 return self._metadata
         except MediaError:
@@ -942,7 +951,7 @@ class EncodedVideoSource(VideoSource):
     def frames(self) -> Iterator[av.VideoFrame]:
         try:
             with self._open() as container:
-                stream = _supported_video_stream(container, self.descriptor.path)
+                stream = self._video_stream(container)
 
                 for frame in container.decode(stream):
                     yield frame
@@ -1026,7 +1035,7 @@ class EncodedVideoSource(VideoSource):
 
         try:
             with self._open() as container:
-                stream     = _supported_video_stream(container, self.descriptor.path)
+                stream     = self._video_stream(container)
                 codec_name = _codec_name(stream.codec_context)
                 self._metadata = _stream_metadata(stream)
                 stream_bitrate = _stream_bitrate(stream)
@@ -1088,7 +1097,7 @@ class EncodedVideoSource(VideoSource):
     def _packet_summary(self) -> _PacketSummary:
         try:
             with self._open() as container:
-                stream     = _supported_video_stream(container, self.descriptor.path)
+                stream     = self._video_stream(container)
                 codec_name = _codec_name(stream.codec_context)
                 return _inspect_packets(container, stream, codec_name)
         except (MediaError, OSError, av.FFmpegError):
@@ -1097,7 +1106,7 @@ class EncodedVideoSource(VideoSource):
     def _frame_summary(self) -> _FrameSummary:
         try:
             with self._open() as container:
-                stream = _supported_video_stream(container, self.descriptor.path)
+                stream = self._video_stream(container)
                 frame_types = []
                 interlaced  = []
 
@@ -1109,6 +1118,21 @@ class EncodedVideoSource(VideoSource):
                 return _summarize_frames(frame_types, interlaced)
         except (MediaError, OSError, av.FFmpegError):
             return _FrameSummary()
+
+    def _video_stream(self, container):
+        stream = _supported_video_stream(container, self.descriptor.path)
+
+        try:
+            stream.codec_context.thread_count = self.decoder_threads
+        except (AttributeError, RuntimeError, ValueError) as error:
+            raise MediaError(
+                "Cannot configure decoder threads for '{}': {}".format(
+                    self.descriptor.path,
+                    error,
+                )
+            ) from error
+
+        return stream
 
     def _open(self):
         input_format = ENCODED_INPUT_FORMATS.get(self.descriptor.extension)
@@ -1135,10 +1159,7 @@ class _EncodedFrameReader:
     def open(self) -> VideoMetadata:
         try:
             self._container = self.source._open()
-            stream = _supported_video_stream(
-                self._container,
-                self.source.descriptor.path,
-            )
+            stream = self.source._video_stream(self._container)
             self.metadata = _stream_metadata(stream)
             self.source._metadata = self.metadata
             self._frames = iter(self._container.decode(stream))
@@ -1537,13 +1558,19 @@ def _optional_int(value) -> Optional[int]:
     return number if number >= 0 else None
 
 
-def create_video_source(descriptor: MediaDescriptor) -> VideoSource:
+def create_video_source(
+    descriptor: MediaDescriptor,
+    decoder_threads: int = DEFAULT_DECODER_THREADS,
+) -> VideoSource:
     """Create the video reader selected by a validated descriptor."""
 
     if descriptor.is_raw:
         return RawVideoSource(descriptor)
 
-    return EncodedVideoSource(descriptor)
+    return EncodedVideoSource(
+        descriptor,
+        decoder_threads = decoder_threads,
+    )
 
 
 def media_extension(path: Path) -> str:

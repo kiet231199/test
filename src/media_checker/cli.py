@@ -11,6 +11,8 @@ from media_checker.descriptors import load_input
 from media_checker.errors import ConfigurationError
 from media_checker.metrics import METRIC_HANDLERS
 from media_checker.models import (
+    DEFAULT_EFFORT,
+    EFFORT_LEVELS,
     STATUS_ERROR,
     STATUS_NOT_CHECKED,
     STATUS_SUCCESS,
@@ -288,6 +290,16 @@ def build_parser() -> argparse.ArgumentParser:
         help     = metrics_help,
     )
     parser.add_argument(
+        "-e",
+        "--effort",
+        choices = EFFORT_LEVELS,
+        default = DEFAULT_EFFORT,
+        help    = (
+            "Decoder effort: light=1 thread, medium=4 threads, "
+            "high=FFmpeg automatic (default: {})"
+        ).format(DEFAULT_EFFORT),
+    )
+    parser.add_argument(
         "-o",
         "--output",
         default = DEFAULT_OUTPUT,
@@ -338,6 +350,7 @@ def _run_request(
                 input     = descriptors.input,
                 reference = descriptors.reference,
                 metrics   = metrics,
+                effort    = args.effort,
             ))
         except CheckInterrupted as interruption:
             result = interruption.result

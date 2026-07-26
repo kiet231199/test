@@ -58,6 +58,7 @@ server later.
 ```text
 media-check --input <descriptor-or-encoded-media>
             [--check [<metric> ...]]
+            [--effort {light,medium,high}]
             [--output <result>]
 ```
 
@@ -66,6 +67,9 @@ media-check --input <descriptor-or-encoded-media>
 - `--check` / `-c` is optional and accepts zero or more metrics. Omitting the
   option or providing it without metric names checks every supported metric in
   registry order.
+- `--effort` / `-e` controls each FFmpeg decoder's thread budget. `light` uses
+  one thread, `medium` uses four threads and is the default, and `high` uses
+  FFmpeg automatic threading.
 - `--output` / `-o` defaults to `result.yaml`.
 - Output paths support only `.txt`, `.yaml`, and `.json`, case-insensitively.
   TXT and YAML share the same ordered YAML representation. JSON is ordered,
@@ -259,6 +263,8 @@ Environment variable rules:
 
 # Performance behavior
 
+- The request effort applies the same decoder-thread budget to encoded input
+  and reference sources for every metric. It has no effect on raw-only work.
 - The checker plans encoded work from the complete requested metric list.
   Metadata, packet inspection, header tracing, frame analysis, and input-side
   PSNR observation share one source open and at most one demux/decode pass.

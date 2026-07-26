@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import av
@@ -190,6 +191,57 @@ class CodecTraceTests(unittest.TestCase):
 
 
 class EncodedMetricTests(unittest.TestCase):
+    def test_decoder_thread_budget_is_applied_before_decode(self):
+        descriptor = MediaDescriptor(
+            path       = Path("unused.264"),
+            media_type = ENCODED_MEDIA_TYPE,
+            extension  = ".264",
+        )
+
+        for decoder_threads in (1, 4, 0):
+            with self.subTest(decoder_threads = decoder_threads):
+                context = SimpleNamespace(
+                    name         = "h264",
+                    thread_count = None,
+                )
+                stream = SimpleNamespace(codec_context = context)
+                container = SimpleNamespace(
+                    streams = SimpleNamespace(video = [stream])
+                )
+                source = EncodedVideoSource(
+                    descriptor,
+                    decoder_threads = decoder_threads,
+                )
+
+                selected = source._video_stream(container)
+
+                self.assertIs(selected, stream)
+                self.assertEqual(context.thread_count, decoder_threads)
+
+    def test_real_decoder_accepts_each_thread_budget(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "input.264"
+            encode_elementary_video(
+                path,
+                "libx264",
+                "h264",
+                frame_count = 2,
+            )
+            descriptor = MediaDescriptor(
+                path       = path,
+                media_type = ENCODED_MEDIA_TYPE,
+                extension  = ".264",
+            )
+
+            for decoder_threads in (1, 4, 0):
+                with self.subTest(decoder_threads = decoder_threads):
+                    source = EncodedVideoSource(
+                        descriptor,
+                        decoder_threads = decoder_threads,
+                    )
+
+                    self.assertEqual(len(list(source.frames())), 2)
+
     def test_each_encoded_request_opens_the_input_once(self):
         metric_requests = (
             ("width",),

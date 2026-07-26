@@ -13,6 +13,15 @@ STATUS_FAILED      = "failed"
 STATUS_ERROR       = "error"
 STATUS_NOT_CHECKED = "not checked"
 
+DECODER_THREAD_BUDGETS = {
+    "light"  : 1,
+    "medium" : 4,
+    "high"   : 0,
+}
+EFFORT_LEVELS = tuple(DECODER_THREAD_BUDGETS)
+DEFAULT_EFFORT = "medium"
+DEFAULT_DECODER_THREADS = DECODER_THREAD_BUDGETS[DEFAULT_EFFORT]
+
 
 @dataclass(frozen = True)
 class MediaDescriptor:
@@ -49,6 +58,7 @@ class CheckRequest:
     input     : MediaDescriptor
     reference : Optional[MediaDescriptor]
     metrics   : Tuple[str, ...]
+    effort    : str = DEFAULT_EFFORT
 
 
 @dataclass(frozen = True)
