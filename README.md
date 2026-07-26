@@ -1,239 +1,143 @@
-# Media Checker
+# 🎬 Media Checker
 
-`media-check` is a standalone Ubuntu 20.04 application for reading video
-metadata and encoded-stream structure, calculating PSNR, and writing ordered
-results. It uses PyAV and NumPy directly and does not invoke `ffmpeg`,
-`ffprobe`, Bash, or subprocesses at runtime.
+`media-check` inspects video files and compares video quality.
 
-## Automated setup
+- It reads metadata and stream structure.
+- It also calculates PSNR against a reference video.
+- Results are written as ordered YAML, TXT, or JSON.
 
-The application supports CPython 3.10. From the project root, run:
+## ✨ Key features
+
+- 🔍 Inspect H.264, H.265, and MP4 video.
+- 📏 Read size, frame rate, codec, and bitrate.
+- 🧩 Inspect GOPs, frame types, crop, and scan type.
+- 🖼️ Compare raw or encoded video with PSNR.
+- 📄 Load simple YAML descriptors.
+- 🧾 Write ordered `.yaml`, `.json`, or `.txt` results.
+- 🧱 Keep successful metrics after another metric fails.
+- 🧵 Use one native thread per decoder or filter.
+
+## 🏗️ How it works
+
+```text
+📄 Descriptor or encoded video
+            ↓
+🧭 Command-line interface
+            ↓
+🧾 Descriptor loader and validator
+            ↓
+🎞️ Raw or encoded video source
+            ↓
+📐 Metric checker and PSNR engine
+            ↓
+🗂️ Ordered result file and console summary
+```
+
+- 🧭 The CLI accepts media and metric choices.
+- 🧾 Descriptors define input and optional reference video.
+- 🎞️ PyAV reads encoded video and raw frames.
+- 📐 Metrics share decoded data when possible.
+- 🗂️ Each metric returns its own status.
+
+## ⚡ Quick installation
+
+Media Checker supports CPython 3.10 on Ubuntu 20.04.
+
+From the project root, run:
 
 ```bash
 source ./setup.sh
 ```
 
-The script checks `python3`, creates or reuses a compatible `.venv`, builds and
-installs the wheel, removes generated build files, and leaves the virtual
-environment active. Successful installation keeps pip and build output quiet
-and prints only the final confirmation; failure diagnostics remain visible. It
-never uses `sudo`.
+The script creates or checks `.venv`.
+It builds and installs `media-check`.
+It leaves the environment active.
 
-If the script is executed instead of sourced, installation still completes,
-but activation cannot remain in the parent terminal:
+If you execute the script, activate manually:
 
 ```bash
 ./setup.sh
 source .venv/bin/activate
 ```
 
-An existing `.venv` must contain a working Python 3.10. The script
-stops without deleting an incompatible environment.
+For a manual installation:
 
-## Descriptor
-
-A YAML, JSON, or TXT descriptor contains the input and an optional PSNR
-reference:
-
-```yaml
-env:
-  WORK_DIR: /absolute/path/to/media
-
-input:
-  path: ${WORK_DIR}/output.yuv
-  width: 224
-  height: 96
-  framerate: "24/1"
-  format: NV12
-  frame_count: 300
-  stride: 256
-  sliceheight: 96
-
-reference:
-  path: ${WORK_DIR}/reference.265
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python3 -m pip install --upgrade pip
+python3 -m pip install .
 ```
 
-`input` is required. `reference` is optional and is needed only for PSNR.
-`reference: null` is treated as no reference. The former flat descriptor format
-is not supported.
+## 🚀 Usage
 
-Encoded H.264/H.265 elementary streams and `.mp4` containers need only a path.
-MP4 input uses the first H.264 or H.265 video stream; audio and other stream
-formats are ignored. An MP4 file without H.264 or H.265 video is a media error.
-Raw `.raw` and `.yuv` media require `path`, `width`, `height`, and `format`.
-`framerate`, `frame_count`, `stride`, and `sliceheight` are optional.
-
-Supported media extensions are `.raw`, `.yuv`, `.264`, `.26l`, `.h264`,
-`.265`, `.h265`, and `.mp4`. H.26L and H.264 extensions use the H.264 demuxer;
-`.265` and `.h265` use the HEVC demuxer. Extension matching is
-case-insensitive.
-
-Supported raw formats are `I444`, `I420`, `YUY2`, `UYVY`, `YVYU`, `NV12`,
-`GRAY8`, `RGB`, `BGR`, `ARGB`, `RGBA`, `ABGR`, `BGRA`, and `RGB16`. `stride`
-is the first plane's stored bytes per row, and `sliceheight` is the first
-plane's stored row count. I444 uses the same geometry for all three planes.
-I420 uses half stride and half slice height for its U and V planes. NV12 uses
-the first-plane stride and half slice height for its interleaved UV plane.
-When omitted, the values default to tightly packed rows and the visible
-height. Supplied padding is removed before PSNR is calculated.
-
-A raw file must contain only complete frames for its effective storage
-geometry. When `input.frame_count` is supplied, PSNR compares that many frames
-and ignores additional frames. Without it, PSNR compares every frame and reports
-an error when the input and reference frame counts differ. Raw framerate is not
-needed for PSNR.
-
-Absolute media paths are recommended. Relative paths are resolved from the
-directory containing the YAML descriptor.
-
-For encoded media, `--input/-i` can point directly to an H.264/H.265 elementary
-stream or supported MP4 file. This is equivalent to a descriptor containing
-only `input.path`, so no reference is available for PSNR. Direct raw input is
-not accepted because its width, height, and format must come from a descriptor.
-
-### Environment variables
-
-`${NAME}` values may use letters, numbers, and underscores; the first character
-must be a letter or underscore.
-
-1. Values inside `env` expand once from system environment variables.
-2. Descriptor `env` values then override system values.
-3. The merged values expand recognized fields in `input` and `reference`.
-
-For example, if the system has `MEDIA_ROOT=/srv/media`:
-
-```yaml
-env:
-  INPUT_FILE: ${MEDIA_ROOT}/input.yuv
-  FRAME_COUNT: 300
-
-input:
-  path: ${INPUT_FILE}
-  frame_count: ${FRAME_COUNT}
-  # The required width, height, and format are omitted from this short example.
+```bash
+media-check --input <descriptor-or-video> \
+  [--check [<metric> ...]] \
+  [--output <result-file>]
 ```
 
-A full replacement keeps its scalar type or is converted to the field's
-required type. A replacement inside a longer string is converted to text.
-`null` unsets a variable. Missing variables, invalid variable names, collection
-values, and malformed `${NAME}` expressions are configuration errors. Expansion
-does not change the running process environment and is not recursive.
+- 📥 `--input` or `-i` is required.
+- ✅ `--check` or `-c` chooses metrics.
+- 🧮 Omit metrics to run every metric.
+- 📤 `--output` or `-o` defaults to `result.yaml`.
+- 🗃️ Output supports `.yaml`, `.json`, and `.txt`.
+- 🔁 Duplicate metric names run once.
 
-Unknown top-level and media fields are ignored. Recognized fields that are used
-for the selected media type are validated. A supplied reference is always
-validated, even when PSNR is not requested.
+Available metrics:
 
-## Usage
+- 📐 `width`, `height`, `framerate`, `level`, and `profile`
+- 🎞️ `codec`, `bitrate`, `gop`, and `interval-intraframe`
+- 🖼️ `pframes`, `bframes`, `refframes`, and `frame_count`
+- 🔎 `scan_type`, `crop`, and `psnr`
+
+Raw video supports only `psnr`.
+Other raw metrics return independent errors.
+
+### 🧪 Example: inspect encoded video
 
 ```bash
 media-check \
-    --input media.yaml \
-    --check codec bitrate gop interval-intraframe pframes bframes \
-            refframes frame_count scan_type crop psnr \
-    --output result.yaml
+  --input media/output.265 \
+  --check codec bitrate gop frame_count \
+  --output result.json
 ```
 
-`--input/-i` is a combined descriptor or direct encoded-media path.
-`--check/-c` is optional and accepts zero or more metric names. Omitting the
-option or providing it without names checks every supported metric in the order
-shown by `--help`. Help lists each metric with an aligned description and wraps
-description text after 60 characters. Encoded decoders and PSNR filters use one
-native thread each to minimize CPU consumption for single-file checks.
-`--output/-o`
-accepts only `.txt`, `.yaml`, or `.json` paths and defaults to `result.yaml` in
-the current directory. Extension matching is case-insensitive. TXT and YAML
-use the same ordered YAML representation; JSON uses an equivalent ordered,
-indented representation.
+Encoded input accepts `.264`, `.26l`, `.h264`, `.265`, `.h265`, and `.mp4`.
+MP4 uses its first H.264 or H.265 video stream.
 
-Raw input supports only `psnr`. Each other recognized metric produces an
-independent error with the value `Unsupported metrics`; this does not prevent a
-requested PSNR check from running.
+### 🖼️ Example: calculate PSNR
 
-### Encoded metrics
+Create `media.yaml` beside your media files:
 
-The original encoded metadata metrics are `width`, `height`, `framerate`,
-`level`, and `profile`. The stream-analysis metrics are:
+```yaml
+input:
+  path: output.yuv
+  width: 224
+  height: 96
+  format: NV12
+  framerate: "24/1"
 
-- `framerate`: estimated displayed frames per second, written as an exact
-  numerator/denominator value such as `24/1` or `30000/1001`.
-- `level`: the codec level signaled by the H.264 or H.265 SPS, normalized to a
-  readable value such as `4.1` or H.264 `1b`.
-
-- `codec`: `h264` or `h265`.
-- `bitrate`: average selected-video bitrate in integer bits per second. Audio
-  and container overhead are excluded.
-- `gop`: largest observed I-picture group, including a final group ending at
-  end of file.
-- `interval-intraframe`: largest decoded frame distance between adjacent I
-  pictures.
-- `pframes` and `bframes`: counts strictly between the I pictures defining the
-  longest intra-frame interval; the earliest interval wins ties.
-- `refframes`: maximum reference-picture capacity signaled in the codec SPS.
-- `frame_count`: number of successfully decoded frames in the selected video
-  stream.
-- `scan_type`: `progressive`, `interlace_tff`, or `interlace_bff`. Mixed or
-  incompletely signaled scan modes produce an unavailable metric error.
-- `crop`: codec SPS crop window in visible luma pixels, formatted as
-  `left:right:top:bottom`.
-
-Metrics that cannot be determined from a stream fail independently. For
-example, a short stream with only one I picture can report `gop` and
-`frame_count` while `interval-intraframe`, `pframes`, and `bframes` report
-metric errors.
-
-### PSNR and performance
-
-PSNR supports every combination of the listed raw formats, H.264/H.265
-elementary streams, and supported MP4 video. It compares visible pixels,
-ignores raw storage padding, requires matching resolutions and frame counts,
-and reports the minimum frame value rounded to six decimals. Identical frames
-return `1000.0`.
-
-Raw layouts whose stored stride represents whole pixels use PyAV's native
-FFmpeg rawvideo reader. FFmpeg crops row and slice-height padding, converts both
-sources to the reference comparison format, and calculates every pairing with
-its native PSNR filter. A packed stride that ends inside a pixel, such as
-RGB24 width 210 with stride 640, uses memory-mapped NumPy views only to copy
-visible rows into AVFrames before the same native crop/convert/PSNR path. If
-the filter cannot be configured, PSNR fails before frame reading begins.
-
-For encoded input, the requested metric list is planned as one inspection
-session. Metadata, packet fields, decoded-frame statistics, and PSNR share one
-source open and at most one demux/decode pass. Packet-only checks avoid decode;
-frame-only checks avoid header tracing; signaled bitrate and level values avoid
-unneeded packet scans. Encoded PSNR also opens its reference once.
-
-Automated tests verify the one-open behavior, fixed native thread limits, and
-all 196 raw-format pairings. Elapsed time is not used as a test assertion
-because results vary with media, storage, codec, CPU count, and system load.
-
-The removed `--reference/-r` option is an argument error. Argument errors print
-the complete help and exit with status `2`.
-
-After writing the result file, the command also prints a short summary in
-request order. Successful values remain in the result file and are omitted from
-the summary; metric errors include their indented message:
-
-```text
-width: success
-level: error
-  Metric 'level' is unavailable for the input media
+reference:
+  path: reference.265
 ```
 
-On an interactive terminal, `success` is green and `error` is red. Redirected
-output does not contain ANSI color codes.
+Then run:
 
-If checking is interrupted with Ctrl+C/SIGINT or SIGTERM, completed metric
-results are retained. The active metric and every later metric are written with
-`status: not checked` and `value: null`; those unfinished metrics are omitted
-from the console summary. The command exits without an interruption message or
-traceback. SIGKILL cannot be handled or written because the operating system
-does not allow process cleanup.
+```bash
+media-check --input media.yaml --check psnr --output result.yaml
+```
 
-## Results
+Raw `.raw` and `.yuv` files need a descriptor.
+They require `path`, `width`, `height`, and `format`.
+Optional fields are `framerate`, `frame_count`, `stride`, and `sliceheight`.
 
-Each requested metric has an independent result, so successful values remain
-available when another metric fails:
+Supported raw formats are `I444`, `I420`, `YUY2`, `UYVY`, `YVYU`, `NV12`,
+`GRAY8`, `RGB`, `BGR`, `ARGB`, `RGBA`, `ABGR`, `BGRA`, and `RGB16`.
+
+## 🧾 Results and exit codes
+
+Each requested metric has its own result.
 
 ```yaml
 status: partial
@@ -246,30 +150,24 @@ metrics:
     value: PSNR requires a reference descriptor
 ```
 
-Metric errors use the `value` field. Request, descriptor, and output
-configuration failures retain a top-level `error` field.
+- ✅ Exit `0`: every metric succeeded.
+- ⚠️ Exit `1`: one or more metrics failed.
+- 🛑 Exit `2`: command or configuration error.
+- ⌨️ Exit `130`: interrupted with Ctrl+C.
+- 📴 Exit `143`: stopped with SIGTERM.
 
-Exit status `0` means every metric succeeded, `1` means at least one metric
-failed, and `2` means the command or descriptor configuration was invalid.
-Ctrl+C/SIGINT exits with status `130`; SIGTERM exits with status `143`. An
-unsupported output suffix is a configuration error and does not create or
-replace the requested path.
+## 🛠️ Development
 
-## Development
-
-Run the complete suite from the project root:
+Run the full test suite:
 
 ```bash
 PYTHONPATH=src:. python3 -m unittest discover -s tests -v
 ```
 
-To build manually:
+Build a wheel manually:
 
 ```bash
 python3 -m pip install --upgrade build
 python3 -m build
-python3 -m pip install --force-reinstall dist/media_checker-*.whl
+python3 -m pip install --force-reinstall --no-deps dist/media_checker-*.whl
 ```
-
-Generated build directories, package metadata, bytecode, and tool caches should
-not be committed.
