@@ -7,6 +7,7 @@ from unittest.mock import patch
 import av
 
 from media_checker.checker import check
+from media_checker.compute_budget import compute_budget
 from media_checker.descriptors import load_descriptor
 from media_checker.media import (
     EncodedVideoSource,
@@ -198,8 +199,12 @@ class EncodedMetricTests(unittest.TestCase):
             extension  = ".264",
         )
 
-        for decoder_threads in (1, 4, 0):
-            with self.subTest(decoder_threads = decoder_threads):
+        for effort, decoder_threads in (
+            ("light", 1),
+            ("medium", 4),
+            ("high", 0),
+        ):
+            with self.subTest(effort = effort):
                 context = SimpleNamespace(
                     name         = "h264",
                     thread_count = None,
@@ -210,7 +215,7 @@ class EncodedMetricTests(unittest.TestCase):
                 )
                 source = EncodedVideoSource(
                     descriptor,
-                    decoder_threads = decoder_threads,
+                    compute_budget = compute_budget(effort),
                 )
 
                 selected = source._video_stream(container)
@@ -233,11 +238,11 @@ class EncodedMetricTests(unittest.TestCase):
                 extension  = ".264",
             )
 
-            for decoder_threads in (1, 4, 0):
-                with self.subTest(decoder_threads = decoder_threads):
+            for effort in ("light", "medium", "high"):
+                with self.subTest(effort = effort):
                     source = EncodedVideoSource(
                         descriptor,
-                        decoder_threads = decoder_threads,
+                        compute_budget = compute_budget(effort),
                     )
 
                     self.assertEqual(len(list(source.frames())), 2)

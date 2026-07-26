@@ -13,6 +13,7 @@ from unittest.mock import call, patch
 import yaml
 
 from media_checker.checker import CheckInterrupted, check, normalize_metrics
+from media_checker.compute_budget import compute_budget
 from media_checker.cli import (
     EXIT_CONFIGURATION,
     EXIT_INTERRUPTED,
@@ -134,11 +135,11 @@ class CliTests(unittest.TestCase):
                     [
                         call(
                             input_descriptor,
-                            decoder_threads = decoder_threads,
+                            compute_budget = compute_budget(effort),
                         ),
                         call(
                             reference_descriptor,
-                            decoder_threads = decoder_threads,
+                            compute_budget = compute_budget(effort),
                         ),
                     ],
                 )

@@ -7,12 +7,11 @@ from textwrap import wrap
 from typing import Any, Dict, List, NoReturn, Optional
 
 from media_checker.checker import CheckInterrupted, check, normalize_metrics
+from media_checker.compute_budget import DEFAULT_EFFORT, EFFORT_LEVELS
 from media_checker.descriptors import load_input
 from media_checker.errors import ConfigurationError
 from media_checker.metrics import METRIC_HANDLERS
 from media_checker.models import (
-    DEFAULT_EFFORT,
-    EFFORT_LEVELS,
     STATUS_ERROR,
     STATUS_NOT_CHECKED,
     STATUS_SUCCESS,

@@ -21,9 +21,12 @@ from typing import (
 
 import av
 
+from media_checker.compute_budget import (
+    DEFAULT_COMPUTE_BUDGET,
+    ComputeBudget,
+)
 from media_checker.errors import ConfigurationError, MediaError
 from media_checker.models import (
-    DEFAULT_DECODER_THREADS,
     MediaDescriptor,
     VideoMetadata,
 )
@@ -811,8 +814,13 @@ def validate_raw_file(descriptor: MediaDescriptor) -> None:
 class VideoSource(ABC):
     """Read normalized metadata and visible frames from one media file."""
 
-    def __init__(self, descriptor: MediaDescriptor):
+    def __init__(
+        self,
+        descriptor: MediaDescriptor,
+        compute_budget: ComputeBudget = DEFAULT_COMPUTE_BUDGET,
+    ):
         self.descriptor = descriptor
+        self.compute_budget = compute_budget
 
     @property
     def is_raw(self) -> bool:
@@ -838,8 +846,12 @@ class _EncodedAnalysisSource(Protocol):
 class RawVideoSource(VideoSource):
     """Read headerless raw frames while removing stored row padding."""
 
-    def __init__(self, descriptor: MediaDescriptor):
-        super().__init__(descriptor)
+    def __init__(
+        self,
+        descriptor: MediaDescriptor,
+        compute_budget: ComputeBudget = DEFAULT_COMPUTE_BUDGET,
+    ):
+        super().__init__(descriptor, compute_budget)
         self.raw_format = RAW_FORMATS[descriptor.format or ""]
 
     def metadata(self) -> VideoMetadata:
@@ -921,10 +933,9 @@ class EncodedVideoSource(VideoSource):
     def __init__(
         self,
         descriptor: MediaDescriptor,
-        decoder_threads: int = DEFAULT_DECODER_THREADS,
+        compute_budget: ComputeBudget = DEFAULT_COMPUTE_BUDGET,
     ):
-        super().__init__(descriptor)
-        self.decoder_threads = decoder_threads
+        super().__init__(descriptor, compute_budget)
         self._metadata: Optional[VideoMetadata] = None
         self._analysis: Optional[_EncodedAnalysis] = None
         self._analysis_metrics = frozenset()  # type: FrozenSet[str]
@@ -1123,7 +1134,7 @@ class EncodedVideoSource(VideoSource):
         stream = _supported_video_stream(container, self.descriptor.path)
 
         try:
-            stream.codec_context.thread_count = self.decoder_threads
+            self.compute_budget.configure_decoder(stream.codec_context)
         except (AttributeError, RuntimeError, ValueError) as error:
             raise MediaError(
                 "Cannot configure decoder threads for '{}': {}".format(
@@ -1560,16 +1571,16 @@ def _optional_int(value) -> Optional[int]:
 
 def create_video_source(
     descriptor: MediaDescriptor,
-    decoder_threads: int = DEFAULT_DECODER_THREADS,
+    compute_budget: ComputeBudget = DEFAULT_COMPUTE_BUDGET,
 ) -> VideoSource:
     """Create the video reader selected by a validated descriptor."""
 
     if descriptor.is_raw:
-        return RawVideoSource(descriptor)
+        return RawVideoSource(descriptor, compute_budget)
 
     return EncodedVideoSource(
         descriptor,
-        decoder_threads = decoder_threads,
+        compute_budget = compute_budget,
     )
 
 
