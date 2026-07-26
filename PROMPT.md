@@ -19,9 +19,9 @@ parent repository.
 - Tests: `tests/`
 - Package configuration: `pyproject.toml`
 - User and build documentation: `README.md`
-- Supported runtime: CPython 3.8 through 3.10
+- Supported runtime: CPython 3.10
 - Primary deployment environment: Ubuntu 20.04 with Python 3.10.7
-- Runtime dependencies: `av==12.3.0`, `numpy==1.24.4`, and `PyYAML==6.0.3`
+- Runtime dependencies: `av==17.1.0`, `numpy==1.24.4`, and `PyYAML==6.0.3`
 
 The application uses PyAV, NumPy, and PyYAML directly. Runtime code must not
 invoke `ffmpeg`, `ffprobe`, Bash, `subprocess`, or source/generated files from
@@ -38,8 +38,11 @@ the parent repository.
   structures. These models form the reusable boundary for a future web API.
 - `media.py` defines raw-format geometry, the raw/encoded `VideoSource`
   implementations, and cached encoded-stream analysis backed by PyAV.
+- `compute_budget.py` owns effort validation and native decoder, filter, and
+  exceptional-copy worker policies.
 - `psnr.py` owns PSNR path selection, native rawvideo/crop adapters, the
-  non-pixel-aligned raw-copy path, and the native FFmpeg-filter implementation.
+  non-pixel-aligned raw-copy adapter, and the native FFmpeg-filter
+  implementation. `raw_copy.py` hides its lazy NumPy copy kernel.
 - `metrics.py` contains metric implementations and the `METRIC_HANDLERS`
   registry. Its request context coordinates reusable encoded analysis and PSNR
   sessions.
@@ -67,9 +70,10 @@ media-check --input <descriptor-or-encoded-media>
 - `--check` / `-c` is optional and accepts zero or more metrics. Omitting the
   option or providing it without metric names checks every supported metric in
   registry order.
-- `--effort` / `-e` controls each FFmpeg decoder's thread budget. `light` uses
-  one thread, `medium` uses four threads and is the default, and `high` uses
-  FFmpeg automatic threading.
+- `--effort` / `-e` controls each FFmpeg decoder and PSNR filter graph.
+  `light` uses one thread, `medium` uses four threads and is the default, and
+  `high` uses FFmpeg automatic threading. These are per-native-stage soft
+  limits rather than a hard process-wide thread cap.
 - `--output` / `-o` defaults to `result.yaml`.
 - Output paths support only `.txt`, `.yaml`, and `.json`, case-insensitively.
   TXT and YAML share the same ordered YAML representation. JSON is ordered,
@@ -263,8 +267,9 @@ Environment variable rules:
 
 # Performance behavior
 
-- The request effort applies the same decoder-thread budget to encoded input
-  and reference sources for every metric. It has no effect on raw-only work.
+- The request effort applies the same native thread budget to encoded input and
+  reference decoders for every metric and to every PSNR filter graph, including
+  raw-only PSNR.
 - The checker plans encoded work from the complete requested metric list.
   Metadata, packet inspection, header tracing, frame analysis, and input-side
   PSNR observation share one source open and at most one demux/decode pass.
@@ -277,9 +282,10 @@ Environment variable rules:
 - Raw layouts whose stored stride represents a whole number of pixels use
   PyAV's native FFmpeg `rawvideo` reader. FFmpeg crops stored row and
   slice-height padding before format conversion.
-- A packed raw stride that ends inside a pixel uses memory-mapped NumPy views
-  and `copyto` to copy only visible rows into AVFrames. NumPy does not calculate
-  PSNR on this path.
+- A packed raw stride that ends inside a pixel lazily initializes NumPy with one
+  native worker, caches memory-mapped source views across frames, and uses
+  `copyto` to copy only visible rows into AVFrames. NumPy does not calculate
+  PSNR on this path and is not imported for other paths.
 - Every raw/raw, raw/encoded, and encoded/encoded pairing uses PyAV's native
   FFmpeg `psnr` filter with an explicit reference comparison format and
   normalized frame timestamps. The final six-decimal `min` value is the
@@ -289,6 +295,9 @@ Environment variable rules:
 - Tests verify one-open encoded requests and all 196 supported raw-format
   pairings. Timing is intentionally not asserted because it depends on storage,
   codecs, CPU count, and host load.
+- `scripts/benchmark_effort.py` warms native initialization, rotates effort
+  order, and reports wall time, CPU-seconds, average occupied cores, and peak
+  resident threads for a shared descriptor and metric set.
 
 # Result schema
 
@@ -333,7 +342,7 @@ the project root, the automated setup is:
 source ./setup.sh
 ```
 
-`setup.sh` requires Python 3.8 through 3.10, creates or validates `.venv`,
+`setup.sh` requires Python 3.10, creates or validates `.venv`,
 builds and installs the wheel, removes generated build output, and leaves the
 environment active when sourced. Successful pip and build steps use quiet modes
 while retaining failure diagnostics. When executed normally, it installs the

@@ -210,6 +210,21 @@ Automated tests verify the one-open behavior and all 196 raw-format pairings.
 Elapsed time is not used as a test assertion because results vary with media,
 storage, codec, CPU count, and system load.
 
+Use the included benchmark to compare every effort mode on the same descriptor:
+
+```bash
+python scripts/benchmark_effort.py media.yaml \
+    --metrics psnr \
+    --repetitions 3
+```
+
+The JSON report includes wall time, process CPU-seconds, average occupied CPU
+cores, and peak resident threads. CPU-seconds and average cores distinguish
+active work from sleeping native threads that tools such as htop still display.
+The benchmark performs an unmeasured warm-up and rotates effort order between
+repetitions. Omit `--metrics` to exercise every supported metric. Use the same
+media and metrics when comparing the report with an FFmpeg command.
+
 The removed `--reference/-r` option is an argument error. Argument errors print
 the complete help and exit with status `2`.
 
