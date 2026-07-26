@@ -284,8 +284,8 @@ Environment variable rules:
   FFmpeg `psnr` filter with an explicit reference comparison format and
   normalized frame timestamps. The final six-decimal `min` value is the
   reported metric.
-- If the native filter is unavailable or its graph cannot be configured, the
-  exact NumPy frame path is selected before either frame iterator is consumed.
+- If the native filter is unavailable or its graph cannot be configured, PSNR
+  fails before either frame iterator is consumed.
 - Tests verify one-open encoded requests and all 196 supported raw-format
   pairings. Timing is intentionally not asserted because it depends on storage,
   codecs, CPU count, and host load.

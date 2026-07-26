@@ -197,8 +197,7 @@ sources to the reference comparison format, and calculates every pairing with
 its native PSNR filter. A packed stride that ends inside a pixel, such as
 RGB24 width 210 with stride 640, uses memory-mapped NumPy views only to copy
 visible rows into AVFrames before the same native crop/convert/PSNR path. If
-the filter cannot be configured, comparison falls back to the exact NumPy
-frame path before frame reading begins.
+the filter cannot be configured, PSNR fails before frame reading begins.
 
 For encoded input, the requested metric list is planned as one inspection
 session. Metadata, packet fields, decoded-frame statistics, and PSNR share one

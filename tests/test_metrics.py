@@ -321,11 +321,6 @@ class RawMetricTests(unittest.TestCase):
                 "media_checker.psnr.np.subtract",
                 side_effect = AssertionError("NumPy calculated raw PSNR"),
             ), patch(
-                "media_checker.psnr._NumpyFrameComparator",
-                side_effect = AssertionError(
-                    "NumPy calculated PSNR instead of copying pixels"
-                ),
-            ), patch(
                 "media_checker.psnr.np.copyto",
                 side_effect = record_copy,
             ):
@@ -369,7 +364,7 @@ class RawMetricTests(unittest.TestCase):
                 48.130804,
             )
 
-    def test_numpy_fallback_is_chosen_before_frames_are_consumed(self):
+    def test_missing_native_filter_fails_before_frames_are_consumed(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             input_descriptor = raw_descriptor(
@@ -384,15 +379,8 @@ class RawMetricTests(unittest.TestCase):
             )
             write_raw_frames(input_descriptor, [bytes(8)])
             write_raw_frames(reference_descriptor, [bytes(24)])
-            original_comparator_init = (
-                psnr_module._NumpyFrameComparator.__init__
-            )
             original_next = psnr_module._NativeRawFrameReader.__next__
             events = []
-
-            def record_comparator(comparator, target_format):
-                events.append("comparator")
-                original_comparator_init(comparator, target_format)
 
             def record_frame(reader):
                 events.append("frame")
@@ -401,9 +389,6 @@ class RawMetricTests(unittest.TestCase):
             with patch(
                 "media_checker.psnr.av.filter.filters_available",
                 frozenset(),
-            ), patch(
-                "media_checker.psnr._NumpyFrameComparator.__init__",
-                new = record_comparator,
             ), patch(
                 "media_checker.psnr._NativeRawFrameReader.__next__",
                 new = record_frame,
@@ -414,9 +399,12 @@ class RawMetricTests(unittest.TestCase):
                     metrics   = ("psnr",),
                 ))
 
-            self.assertEqual(result.metrics["psnr"].value, 1000.0)
-            self.assertEqual(events[0], "comparator")
-            self.assertIn("frame", events)
+            self.assertEqual(result.status, STATUS_FAILED)
+            self.assertIn(
+                "Native FFmpeg PSNR is unavailable",
+                result.metrics["psnr"].value,
+            )
+            self.assertEqual(events, [])
 
     def test_yuy2_calculates_psnr_with_pinned_pyav(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -1,5 +1,4 @@
 import gc
-import math
 import mmap
 import re
 import threading
@@ -225,32 +224,6 @@ class _NativeFrameComparator:
                 if self._lock_acquired:
                     self._lock_acquired = False
                     PSNR_FILTER_LOCK.release()
-
-
-class _NumpyFrameComparator:
-    """Exact compatibility path used when native graph setup is unavailable."""
-
-    def __init__(self, target_format: str):
-        self.target_format = target_format
-        self.minimum = math.inf
-
-    def compare(
-        self,
-        input_frame: av.VideoFrame,
-        reference_frame: av.VideoFrame,
-        frame_index: int,
-    ) -> None:
-        del frame_index
-        self.minimum = min(
-            self.minimum,
-            frame_psnr(input_frame, reference_frame, self.target_format),
-        )
-
-    def finish(self) -> float:
-        return _normalize_minimum(self.minimum)
-
-    def close(self) -> None:
-        pass
 
 
 class _SourceFrameReader:
@@ -494,12 +467,11 @@ class _CopiedRawFrameReader:
 
 def _create_frame_reader(
     source: VideoSource,
-    force_copy_raw: bool = False,
 ):
     if not source.is_raw:
         return _SourceFrameReader(source)
 
-    storage = None if force_copy_raw else _native_raw_storage(source)
+    storage = _native_raw_storage(source)
 
     if storage is None:
         return _CopiedRawFrameReader(source)
@@ -595,16 +567,8 @@ class PsnrSession:
                     target_format,
                     reference_crop = reference_spec.crop,
                 )
-            except _NativePsnrSetupError:
-                if reference_spec.crop is not None:
-                    self._reference_reader.close()
-                    self._reference_reader = _create_frame_reader(
-                        self.reference_source,
-                        force_copy_raw = True,
-                    )
-                    reference_spec = self._reference_reader.open()
-
-                self._comparator = _NumpyFrameComparator(target_format)
+            except _NativePsnrSetupError as error:
+                raise _native_psnr_error(error) from error
 
             self._reference_frames = self._reference_reader
         except KeyboardInterrupt:
@@ -800,24 +764,8 @@ def _calculate_reader_psnr(
                 input_crop     = input_spec.crop,
                 reference_crop = reference_spec.crop,
             )
-        except _NativePsnrSetupError:
-            if input_spec.crop is not None:
-                input_reader.close()
-                input_reader = _create_frame_reader(
-                    input_source,
-                    force_copy_raw = True,
-                )
-                input_reader.open()
-
-            if reference_spec.crop is not None:
-                reference_reader.close()
-                reference_reader = _create_frame_reader(
-                    reference_source,
-                    force_copy_raw = True,
-                )
-                reference_reader.open()
-
-            comparator = _NumpyFrameComparator(target_format)
+        except _NativePsnrSetupError as error:
+            raise _native_psnr_error(error) from error
 
         compared_frames = _compare_reader_frames(
             input_reader,
@@ -929,40 +877,6 @@ def comparison_format(
     return RAW_COMPARISON_FORMATS.get(metadata.format, metadata.format)
 
 
-def frame_psnr(
-    input_frame: av.VideoFrame,
-    reference_frame: av.VideoFrame,
-    target_format: str,
-) -> float:
-    if (
-        input_frame.width != reference_frame.width
-        or input_frame.height != reference_frame.height
-    ):
-        raise MetricError("PSNR frame resolutions do not match")
-
-    input_array = input_frame.to_ndarray(format = target_format)
-    reference_array = reference_frame.to_ndarray(format = target_format)
-
-    if input_array.shape != reference_array.shape:
-        raise MetricError("PSNR converted frame shapes do not match")
-
-    difference = np.subtract(
-        input_array,
-        reference_array,
-        dtype = np.int16,
-    )
-    squared_error = np.square(difference, dtype = np.int64)
-    mean_squared_error = float(
-        squared_error.sum(dtype = np.int64)
-    ) / input_array.size
-
-    if mean_squared_error == 0:
-        return math.inf
-
-    peak = _sample_peak(target_format, input_array.dtype.itemsize)
-    return 10.0 * math.log10((peak * peak) / mean_squared_error)
-
-
 def _validate_metadata(
     input_metadata: VideoMetadata,
     reference_metadata: VideoMetadata,
@@ -1029,24 +943,6 @@ def _minimum_from_logs(
     return round(float(values[-1]), PSNR_DECIMAL_PLACES)
 
 
-def _normalize_minimum(minimum: float) -> float:
-    if math.isinf(minimum):
-        return INFINITE_PSNR_VALUE
-
-    return round(minimum, PSNR_DECIMAL_PLACES)
-
-
-def _sample_peak(format_name: str, item_size: int) -> int:
-    try:
-        video_format = av.VideoFormat(format_name)
-        components = getattr(video_format, "components", ())
-        bit_depth = max(component.bits for component in components)
-    except (AttributeError, ValueError):
-        bit_depth = item_size * 8
-
-    return (1 << bit_depth) - 1
-
-
 def _frame_count_error() -> MetricError:
     return MetricError(
         "PSNR requires input and reference frame counts to match"
@@ -1058,6 +954,12 @@ def _metric_error(error: Exception) -> MetricError:
         return error
 
     return MetricError(str(error))
+
+
+def _native_psnr_error(error: Exception) -> MetricError:
+    return MetricError(
+        "Native FFmpeg PSNR is unavailable: {}".format(error)
+    )
 
 
 def _close_frame_iterators(*iterators) -> None:
