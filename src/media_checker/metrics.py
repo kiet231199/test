@@ -102,6 +102,7 @@ class MetricContext:
             observer = PsnrSession(
                 self.reference_source,
                 self.input_frame_limit,
+                self.input_source.compute_budget,
             )
             self._psnr_session = observer
 

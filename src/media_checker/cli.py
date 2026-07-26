@@ -294,7 +294,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices = EFFORT_LEVELS,
         default = DEFAULT_EFFORT,
         help    = (
-            "Decoder effort: light=1 thread, medium=4 threads, "
+            "Native compute effort for decoders and PSNR filters: "
+            "light=1 thread, medium=4 threads, "
             "high=FFmpeg automatic (default: {})"
         ).format(DEFAULT_EFFORT),
     )

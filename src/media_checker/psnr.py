@@ -8,6 +8,7 @@ from typing import Iterable, Optional, Tuple, cast
 
 import av
 
+from media_checker.compute_budget import ComputeBudget
 from media_checker.errors import MediaError, MetricError
 from media_checker.media import RAW_FORMATS, VideoSource
 from media_checker.models import VideoMetadata
@@ -70,6 +71,7 @@ class _NativeFrameComparator:
         input_metadata: VideoMetadata,
         reference_metadata: VideoMetadata,
         target_format: str,
+        compute_budget: ComputeBudget,
         input_crop: Optional[Tuple[int, int]] = None,
         reference_crop: Optional[Tuple[int, int]] = None,
     ):
@@ -109,6 +111,7 @@ class _NativeFrameComparator:
                 reference_format,
             )
             graph = av.filter.Graph()
+            compute_budget.configure_filter_graph(graph)
             input_buffer = graph.add_buffer(template = input_template)
             reference_buffer = graph.add_buffer(template = reference_template)
             input_format_filter = _add_input_filters(
@@ -138,7 +141,13 @@ class _NativeFrameComparator:
         except KeyboardInterrupt:
             self.close()
             raise
-        except (ValueError, OSError, av.FFmpegError) as error:
+        except (
+            AttributeError,
+            RuntimeError,
+            ValueError,
+            OSError,
+            av.FFmpegError,
+        ) as error:
             self.close()
             raise _NativePsnrSetupError(str(error)) from error
 
@@ -499,10 +508,12 @@ class PsnrSession:
         self,
         reference_source: VideoSource,
         frame_limit: Optional[int],
+        compute_budget: ComputeBudget,
         input_is_raw: bool = False,
     ):
         self.reference_source = reference_source
         self.frame_limit = frame_limit
+        self.compute_budget = compute_budget
         self.input_is_raw = input_is_raw
         self._reference_reader = None
         self._reference_frames = None
@@ -550,6 +561,7 @@ class PsnrSession:
                     input_metadata,
                     reference_spec.frame_metadata,
                     target_format,
+                    self.compute_budget,
                     reference_crop = reference_spec.crop,
                 )
             except _NativePsnrSetupError as error:
@@ -681,6 +693,7 @@ def calculate_psnr(
     session = PsnrSession(
         reference_source,
         frame_limit,
+        input_source.compute_budget,
         input_is_raw = input_source.is_raw,
     )
     session.start(input_metadata)
@@ -746,6 +759,7 @@ def _calculate_reader_psnr(
                 input_spec.frame_metadata,
                 reference_spec.frame_metadata,
                 target_format,
+                input_source.compute_budget,
                 input_crop     = input_spec.crop,
                 reference_crop = reference_spec.crop,
             )

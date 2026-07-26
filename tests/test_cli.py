@@ -780,7 +780,7 @@ class HelpTests(unittest.TestCase):
         self.assertIn("[-c [METRIC ...]]", help_text)
         self.assertIn("-e, --effort {light,medium,high}", help_text)
         self.assertIn(
-            "Decoder effort: light=1 thread, medium=4 threads,",
+            "Native compute effort for decoders and PSNR filters:",
             help_text,
         )
         self.assertIn(

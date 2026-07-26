@@ -138,10 +138,11 @@ media-check \
 `--check/-c` is optional and accepts zero or more metric names. Omitting the
 option or providing it without names checks every supported metric in the order
 shown by `--help`. Help lists each metric with an aligned description and wraps
-description text after 60 characters. `--effort/-e` controls the FFmpeg decoder
-thread budget for all encoded metrics and both PSNR sources: `light` uses one
-thread, `medium` uses four threads and is the default, and `high` lets FFmpeg
-choose automatically. It has no effect on raw-only checks. `--output/-o`
+description text after 60 characters. `--effort/-e` controls the native FFmpeg
+thread budget for encoded decoders and PSNR filters: `light` uses one thread,
+`medium` uses four threads and is the default, and `high` lets FFmpeg choose
+automatically. The limit is applied to each native stage rather than acting as
+a hard process-wide thread cap. `--output/-o`
 accepts only `.txt`, `.yaml`, or `.json` paths and defaults to `result.yaml` in
 the current directory. Extension matching is case-insensitive. TXT and YAML
 use the same ordered YAML representation; JSON uses an equivalent ordered,

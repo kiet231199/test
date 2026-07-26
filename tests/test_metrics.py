@@ -36,6 +36,67 @@ from tests.helpers import (
 
 
 class RawMetricTests(unittest.TestCase):
+    def test_effort_is_applied_before_psnr_filters_are_added(self):
+        real_graph_type = psnr_module.av.filter.Graph
+
+        class RecordingGraph:
+            def __init__(self, events):
+                self.events = events
+                self.graph = real_graph_type()
+
+            @property
+            def threads(self):
+                return self.graph.threads
+
+            @threads.setter
+            def threads(self, value):
+                self.events.append(("threads", value))
+                self.graph.threads = value
+
+            def add_buffer(self, *args, **kwargs):
+                self.events.append(("add", "buffer"))
+                return self.graph.add_buffer(*args, **kwargs)
+
+            def add(self, name, *args, **kwargs):
+                self.events.append(("add", name))
+                return self.graph.add(name, *args, **kwargs)
+
+            def configure(self):
+                return self.graph.configure()
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            input_descriptor = raw_descriptor(root / "input.raw")
+            reference_descriptor = raw_descriptor(root / "reference.raw")
+            write_raw_frames(input_descriptor, [bytes(12)])
+            write_raw_frames(reference_descriptor, [bytes(12)])
+
+            for effort, expected_threads in (
+                ("light", 1),
+                ("medium", 4),
+                ("high", 0),
+            ):
+                with self.subTest(effort = effort):
+                    events = []
+
+                    with patch(
+                        "media_checker.psnr.av.filter.Graph",
+                        side_effect = lambda: RecordingGraph(events),
+                    ):
+                        result = check(CheckRequest(
+                            input     = input_descriptor,
+                            reference = reference_descriptor,
+                            metrics   = ("psnr",),
+                            effort    = effort,
+                        ))
+
+                    self.assertEqual(result.metrics["psnr"].value, 1000.0)
+                    self.assertEqual(events[0], ("threads", expected_threads))
+                    self.assertTrue(all(
+                        event[0] == "add"
+                        for event in events[1:]
+                    ))
+
     def test_every_raw_format_pair_has_a_psnr_path(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
