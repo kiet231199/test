@@ -1,10 +1,13 @@
 from dataclasses import dataclass
+import importlib
+import os
 from typing import Any, Dict, Tuple
 
 from media_checker.errors import ConfigurationError
 
 
 DEFAULT_EFFORT = "medium"
+NUMPY_COPY_THREADS = 1
 
 
 @dataclass(frozen = True)
@@ -20,6 +23,21 @@ class ComputeBudget:
 
     def configure_filter_graph(self, graph: Any) -> None:
         graph.threads = self.filter_threads
+
+    def load_numpy(self):
+        """Load NumPy after constraining copy-only native worker pools."""
+
+        thread_count = str(NUMPY_COPY_THREADS)
+
+        for variable in (
+            "OPENBLAS_NUM_THREADS",
+            "OMP_NUM_THREADS",
+            "MKL_NUM_THREADS",
+            "NUMEXPR_NUM_THREADS",
+        ):
+            os.environ[variable] = thread_count
+
+        return importlib.import_module("numpy")
 
 
 _COMPUTE_BUDGETS = {

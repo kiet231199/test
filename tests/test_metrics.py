@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import media_checker.psnr as psnr_module
 from media_checker.checker import check
+from media_checker.compute_budget import compute_budget
 from media_checker.errors import MediaError
 from media_checker.media import (
     EncodedVideoSource,
@@ -192,25 +193,21 @@ class RawMetricTests(unittest.TestCase):
                 ("RGBA", "RGB"),
             )
 
-            with patch(
-                "media_checker.psnr.np.subtract",
-                side_effect = AssertionError("NumPy calculated raw PSNR"),
-            ):
-                for input_name, reference_name in equivalent_pairs:
-                    with self.subTest(
-                        input_format = input_name,
-                        reference_format = reference_name,
-                    ):
-                        result = check(CheckRequest(
-                            input     = descriptors[input_name],
-                            reference = descriptors[reference_name],
-                            metrics   = ("psnr",),
-                        ))
+            for input_name, reference_name in equivalent_pairs:
+                with self.subTest(
+                    input_format = input_name,
+                    reference_format = reference_name,
+                ):
+                    result = check(CheckRequest(
+                        input     = descriptors[input_name],
+                        reference = descriptors[reference_name],
+                        metrics   = ("psnr",),
+                    ))
 
-                        self.assertEqual(
-                            result.metrics["psnr"].value,
-                            1000.0,
-                        )
+                    self.assertEqual(
+                        result.metrics["psnr"].value,
+                        1000.0,
+                    )
 
     def test_native_rawvideo_handles_tight_and_pixel_aligned_padding(self):
         cases = (
@@ -269,12 +266,7 @@ class RawMetricTests(unittest.TestCase):
                     )
 
                     with patch(
-                        "media_checker.psnr.np.subtract",
-                        side_effect = AssertionError(
-                            "NumPy calculated raw PSNR"
-                        ),
-                    ), patch(
-                        "media_checker.psnr.np.copyto",
+                        "media_checker.psnr.RawFrameCopier",
                         side_effect = AssertionError(
                             "pixel-aligned storage required a NumPy copy"
                         ),
@@ -312,16 +304,16 @@ class RawMetricTests(unittest.TestCase):
             write_raw_frames(input_descriptor, [input_frame])
             write_raw_frames(reference_descriptor, [reference_frame])
             copied = []
+            real_copyto = psnr_module.RawFrameCopier.copy
 
-            def record_copy(destination, source):
-                copied.append((destination.shape, source.shape))
-                destination[...] = source
+            def record_copy(copier, frame_index, frame):
+                copied.append(frame_index)
+                return real_copyto(copier, frame_index, frame)
 
-            with patch(
-                "media_checker.psnr.np.subtract",
-                side_effect = AssertionError("NumPy calculated raw PSNR"),
-            ), patch(
-                "media_checker.psnr.np.copyto",
+            with patch.object(
+                psnr_module.RawFrameCopier,
+                "copy",
+                autospec = True,
                 side_effect = record_copy,
             ):
                 result = check(CheckRequest(
@@ -331,11 +323,31 @@ class RawMetricTests(unittest.TestCase):
                 ))
 
             self.assertEqual(result.metrics["psnr"].value, 1000.0)
-            self.assertEqual(len(copied), 2)
-            self.assertTrue(all(
-                destination == source == (2, 630)
-                for destination, source in copied
-            ))
+            self.assertEqual(copied, [0, 0])
+
+    def test_non_pixel_aligned_copy_reuses_source_views_across_frames(self):
+        descriptor = raw_descriptor(
+            Path("unused.raw"),
+            raw_format = "RGB",
+            width       = 210,
+            height      = 2,
+            frame_count = 2,
+            stride      = 640,
+            sliceheight = 2,
+        )
+        layout = RAW_FORMATS["RGB"].layout(descriptor)
+        mapping = bytearray(layout.frame_size * 2)
+        copier = psnr_module.RawFrameCopier(
+            mapping,
+            layout,
+            compute_budget("light"),
+        )
+
+        try:
+            self.assertEqual(len(copier._sources), 1)
+            self.assertEqual(copier._sources[0].shape, (2, 2, 630))
+        finally:
+            copier.close()
 
     def test_native_cross_format_psnr_keeps_six_decimal_minimum(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -7,11 +7,11 @@ from fractions import Fraction
 from typing import Iterable, Optional, Tuple, cast
 
 import av
-import numpy as np
 
 from media_checker.errors import MediaError, MetricError
 from media_checker.media import RAW_FORMATS, VideoSource
 from media_checker.models import VideoMetadata
+from media_checker.raw_copy import RawFrameCopier
 
 
 INFINITE_PSNR_VALUE = 1000.0
@@ -376,6 +376,7 @@ class _CopiedRawFrameReader:
         self.spec = None  # type: Optional[_FrameSpec]
         self._file = None
         self._mapping = None
+        self._copier = None
         self._frame_index = 0
 
     def open(self) -> _FrameSpec:
@@ -387,6 +388,11 @@ class _CopiedRawFrameReader:
                 self._file.fileno(),
                 0,
                 access = mmap.ACCESS_READ,
+            )
+            self._copier = RawFrameCopier(
+                self._mapping,
+                self.layout,
+                self.source.compute_budget,
             )
         except (OSError, ValueError) as error:
             self.close()
@@ -425,37 +431,16 @@ class _CopiedRawFrameReader:
         if time_base is not None:
             frame.time_base = time_base
 
-        for source_plane, destination_plane in zip(
-            self.layout.planes,
-            frame.planes,
-        ):
-            if destination_plane.line_size < source_plane.visible_row_bytes:
-                raise MediaError(
-                    "PyAV plane stride is smaller than the visible raw row"
-                )
-
-            source = np.ndarray(
-                shape = (
-                    source_plane.visible_rows,
-                    source_plane.visible_row_bytes,
-                ),
-                dtype = np.uint8,
-                buffer = self._mapping,
-                offset = frame_offset + source_plane.offset,
-                strides = (source_plane.stride, 1),
-            )
-            destination = np.ndarray(
-                shape = source.shape,
-                dtype = np.uint8,
-                buffer = destination_plane,
-                strides = (destination_plane.line_size, 1),
-            )
-            np.copyto(destination, source)
+        self._copier.copy(self._frame_index, frame)
 
         self._frame_index += 1
         return frame
 
     def close(self) -> None:
+        if self._copier is not None:
+            self._copier.close()
+            self._copier = None
+
         if self._mapping is not None:
             self._mapping.close()
             self._mapping = None
