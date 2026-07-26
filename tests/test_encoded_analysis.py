@@ -7,7 +7,6 @@ from unittest.mock import patch
 import av
 
 from media_checker.checker import check
-from media_checker.compute_budget import compute_budget
 from media_checker.descriptors import load_descriptor
 from media_checker.media import (
     EncodedVideoSource,
@@ -198,38 +197,29 @@ class EncodedMetricTests(unittest.TestCase):
         self.assertEqual(_picture_type_name(2), "P")
         self.assertEqual(_picture_type_name(3), "B")
 
-    def test_decoder_thread_budget_is_applied_before_decode(self):
+    def test_decoder_uses_one_thread_before_decode(self):
         descriptor = MediaDescriptor(
             path       = Path("unused.264"),
             media_type = ENCODED_MEDIA_TYPE,
             extension  = ".264",
         )
 
-        for effort, decoder_threads in (
-            ("light", 1),
-            ("medium", 4),
-            ("high", 0),
-        ):
-            with self.subTest(effort = effort):
-                context = SimpleNamespace(
-                    name         = "h264",
-                    thread_count = None,
-                )
-                stream = SimpleNamespace(codec_context = context)
-                container = SimpleNamespace(
-                    streams = SimpleNamespace(video = [stream])
-                )
-                source = EncodedVideoSource(
-                    descriptor,
-                    compute_budget = compute_budget(effort),
-                )
+        context = SimpleNamespace(
+            name         = "h264",
+            thread_count = None,
+        )
+        stream = SimpleNamespace(codec_context = context)
+        container = SimpleNamespace(
+            streams = SimpleNamespace(video = [stream])
+        )
+        source = EncodedVideoSource(descriptor)
 
-                selected = source._video_stream(container)
+        selected = source._video_stream(container)
 
-                self.assertIs(selected, stream)
-                self.assertEqual(context.thread_count, decoder_threads)
+        self.assertIs(selected, stream)
+        self.assertEqual(context.thread_count, 1)
 
-    def test_real_decoder_accepts_each_thread_budget(self):
+    def test_real_decoder_accepts_fixed_thread_limit(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "input.264"
             encode_elementary_video(
@@ -244,14 +234,9 @@ class EncodedMetricTests(unittest.TestCase):
                 extension  = ".264",
             )
 
-            for effort in ("light", "medium", "high"):
-                with self.subTest(effort = effort):
-                    source = EncodedVideoSource(
-                        descriptor,
-                        compute_budget = compute_budget(effort),
-                    )
+            source = EncodedVideoSource(descriptor)
 
-                    self.assertEqual(len(list(source.frames())), 2)
+            self.assertEqual(len(list(source.frames())), 2)
 
     def test_each_encoded_request_opens_the_input_once(self):
         metric_requests = (

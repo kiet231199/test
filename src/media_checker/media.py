@@ -21,15 +21,12 @@ from typing import (
 
 import av
 
-from media_checker.compute_budget import (
-    DEFAULT_COMPUTE_BUDGET,
-    ComputeBudget,
-)
 from media_checker.errors import ConfigurationError, MediaError
 from media_checker.models import (
     MediaDescriptor,
     VideoMetadata,
 )
+from media_checker.native_runtime import configure_decoder
 
 
 RAW_VIDEO_EXTENSIONS        = (".raw", ".yuv")
@@ -814,13 +811,8 @@ def validate_raw_file(descriptor: MediaDescriptor) -> None:
 class VideoSource(ABC):
     """Read normalized metadata and visible frames from one media file."""
 
-    def __init__(
-        self,
-        descriptor: MediaDescriptor,
-        compute_budget: ComputeBudget = DEFAULT_COMPUTE_BUDGET,
-    ):
+    def __init__(self, descriptor: MediaDescriptor):
         self.descriptor = descriptor
-        self.compute_budget = compute_budget
 
     @property
     def is_raw(self) -> bool:
@@ -846,12 +838,8 @@ class _EncodedAnalysisSource(Protocol):
 class RawVideoSource(VideoSource):
     """Read headerless raw frames while removing stored row padding."""
 
-    def __init__(
-        self,
-        descriptor: MediaDescriptor,
-        compute_budget: ComputeBudget = DEFAULT_COMPUTE_BUDGET,
-    ):
-        super().__init__(descriptor, compute_budget)
+    def __init__(self, descriptor: MediaDescriptor):
+        super().__init__(descriptor)
         self.raw_format = RAW_FORMATS[descriptor.format or ""]
 
     def metadata(self) -> VideoMetadata:
@@ -930,12 +918,8 @@ class RawVideoSource(VideoSource):
 class EncodedVideoSource(VideoSource):
     """Read H.264 or H.265 video from elementary streams or MP4."""
 
-    def __init__(
-        self,
-        descriptor: MediaDescriptor,
-        compute_budget: ComputeBudget = DEFAULT_COMPUTE_BUDGET,
-    ):
-        super().__init__(descriptor, compute_budget)
+    def __init__(self, descriptor: MediaDescriptor):
+        super().__init__(descriptor)
         self._metadata: Optional[VideoMetadata] = None
         self._analysis: Optional[_EncodedAnalysis] = None
         self._analysis_metrics = frozenset()  # type: FrozenSet[str]
@@ -1133,7 +1117,7 @@ class EncodedVideoSource(VideoSource):
         stream = _supported_video_stream(container, self.descriptor.path)
 
         try:
-            self.compute_budget.configure_decoder(stream.codec_context)
+            configure_decoder(stream.codec_context)
         except (AttributeError, RuntimeError, ValueError) as error:
             raise MediaError(
                 "Cannot configure decoder threads for '{}': {}".format(
@@ -1581,19 +1565,13 @@ def _optional_int(value) -> Optional[int]:
     return number if number >= 0 else None
 
 
-def create_video_source(
-    descriptor: MediaDescriptor,
-    compute_budget: ComputeBudget = DEFAULT_COMPUTE_BUDGET,
-) -> VideoSource:
+def create_video_source(descriptor: MediaDescriptor) -> VideoSource:
     """Create the video reader selected by a validated descriptor."""
 
     if descriptor.is_raw:
-        return RawVideoSource(descriptor, compute_budget)
+        return RawVideoSource(descriptor)
 
-    return EncodedVideoSource(
-        descriptor,
-        compute_budget = compute_budget,
-    )
+    return EncodedVideoSource(descriptor)
 
 
 def media_extension(path: Path) -> str:

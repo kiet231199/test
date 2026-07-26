@@ -1,6 +1,5 @@
 from typing import Dict, Iterable, Tuple
 
-from media_checker.compute_budget import compute_budget
 from media_checker.errors import CheckerError, ConfigurationError
 from media_checker.media import create_video_source
 from media_checker.metrics import METRIC_HANDLERS, MetricContext
@@ -47,24 +46,17 @@ def check(request: CheckRequest) -> CheckResult:
     """Calculate all requested metrics and retain independent failures."""
 
     metric_names = normalize_metrics(request.metrics)
-    budget = compute_budget(request.effort)
     results = {
         metric_name : MetricResult.not_checked()
         for metric_name in metric_names
     }
 
     try:
-        input_source = create_video_source(
-            request.input,
-            compute_budget = budget,
-        )
+        input_source = create_video_source(request.input)
         reference_source = None
 
         if request.reference is not None:
-            reference_source = create_video_source(
-                request.reference,
-                compute_budget = budget,
-            )
+            reference_source = create_video_source(request.reference)
 
         context = MetricContext(
             input_source      = input_source,

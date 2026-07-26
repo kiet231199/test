@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 import media_checker.psnr as psnr_module
 from media_checker.checker import check
-from media_checker.compute_budget import compute_budget
 from media_checker.errors import MediaError
 from media_checker.media import (
     EncodedVideoSource,
@@ -36,7 +35,7 @@ from tests.helpers import (
 
 
 class RawMetricTests(unittest.TestCase):
-    def test_effort_is_applied_before_psnr_filters_are_added(self):
+    def test_one_thread_is_configured_before_psnr_filters_are_added(self):
         real_graph_type = psnr_module.av.filter.Graph
 
         class RecordingGraph:
@@ -71,31 +70,24 @@ class RawMetricTests(unittest.TestCase):
             write_raw_frames(input_descriptor, [bytes(12)])
             write_raw_frames(reference_descriptor, [bytes(12)])
 
-            for effort, expected_threads in (
-                ("light", 1),
-                ("medium", 4),
-                ("high", 0),
+            events = []
+
+            with patch(
+                "media_checker.psnr.av.filter.Graph",
+                side_effect = lambda: RecordingGraph(events),
             ):
-                with self.subTest(effort = effort):
-                    events = []
+                result = check(CheckRequest(
+                    input     = input_descriptor,
+                    reference = reference_descriptor,
+                    metrics   = ("psnr",),
+                ))
 
-                    with patch(
-                        "media_checker.psnr.av.filter.Graph",
-                        side_effect = lambda: RecordingGraph(events),
-                    ):
-                        result = check(CheckRequest(
-                            input     = input_descriptor,
-                            reference = reference_descriptor,
-                            metrics   = ("psnr",),
-                            effort    = effort,
-                        ))
-
-                    self.assertEqual(result.metrics["psnr"].value, 1000.0)
-                    self.assertEqual(events[0], ("threads", expected_threads))
-                    self.assertTrue(all(
-                        event[0] == "add"
-                        for event in events[1:]
-                    ))
+            self.assertEqual(result.metrics["psnr"].value, 1000.0)
+            self.assertEqual(events[0], ("threads", 1))
+            self.assertTrue(all(
+                event[0] == "add"
+                for event in events[1:]
+            ))
 
     def test_every_raw_format_pair_has_a_psnr_path(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -401,7 +393,6 @@ class RawMetricTests(unittest.TestCase):
         copier = psnr_module.RawFrameCopier(
             mapping,
             layout,
-            compute_budget("light"),
         )
 
         try:

@@ -3,9 +3,6 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from media_checker.compute_budget import DEFAULT_EFFORT
-
-
 RAW_MEDIA_TYPE     = "raw"
 ENCODED_MEDIA_TYPE = "encoded"
 
@@ -50,7 +47,6 @@ class CheckRequest:
     input     : MediaDescriptor
     reference : Optional[MediaDescriptor]
     metrics   : Tuple[str, ...]
-    effort    : str = DEFAULT_EFFORT
 
 
 @dataclass(frozen = True)

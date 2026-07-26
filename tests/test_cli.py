@@ -13,7 +13,6 @@ from unittest.mock import call, patch
 import yaml
 
 from media_checker.checker import CheckInterrupted, check, normalize_metrics
-from media_checker.compute_budget import compute_budget
 from media_checker.cli import (
     EXIT_CONFIGURATION,
     EXIT_INTERRUPTED,
@@ -92,7 +91,7 @@ def _raw_pair_document():
 
 
 class CliTests(unittest.TestCase):
-    def test_checker_maps_effort_to_both_decoder_thread_budgets(self):
+    def test_checker_creates_input_and_reference_sources(self):
         input_descriptor = MediaDescriptor(
             path       = Path("input.264"),
             media_type = ENCODED_MEDIA_TYPE,
@@ -103,69 +102,31 @@ class CliTests(unittest.TestCase):
             media_type = ENCODED_MEDIA_TYPE,
             extension  = ".264",
         )
-        cases = (
-            ("light", 1),
-            ("medium", 4),
-            ("high", 0),
-        )
+        metric_calls = []
 
-        for effort, decoder_threads in cases:
-            with self.subTest(effort = effort):
-                metric_calls = []
-
-                with patch.dict(
-                    METRIC_HANDLERS,
-                    {"width" : StubMetric("width", metric_calls)},
-                    clear = True,
-                ), patch(
-                    "media_checker.checker.create_video_source",
-                    return_value = object(),
-                ) as create_source:
-                    result = check(CheckRequest(
-                        input     = input_descriptor,
-                        reference = reference_descriptor,
-                        metrics   = ("width",),
-                        effort    = effort,
-                    ))
-
-                self.assertEqual(result.status, "success")
-                self.assertEqual(metric_calls, ["width"])
-                self.assertEqual(
-                    create_source.call_args_list,
-                    [
-                        call(
-                            input_descriptor,
-                            compute_budget = compute_budget(effort),
-                        ),
-                        call(
-                            reference_descriptor,
-                            compute_budget = compute_budget(effort),
-                        ),
-                    ],
-                )
-
-    def test_core_checker_rejects_an_unknown_effort(self):
-        descriptor = MediaDescriptor(
-            path       = Path("unused.264"),
-            media_type = ENCODED_MEDIA_TYPE,
-            extension  = ".264",
-        )
-
-        with patch(
-            "media_checker.checker.create_video_source"
+        with patch.dict(
+            METRIC_HANDLERS,
+            {"width" : StubMetric("width", metric_calls)},
+            clear = True,
+        ), patch(
+            "media_checker.checker.create_video_source",
+            return_value = object(),
         ) as create_source:
-            with self.assertRaisesRegex(
-                ConfigurationError,
-                "Unsupported effort 'extreme'",
-            ):
-                check(CheckRequest(
-                    input     = descriptor,
-                    reference = None,
-                    metrics   = ("width",),
-                    effort    = "extreme",
-                ))
+            result = check(CheckRequest(
+                input     = input_descriptor,
+                reference = reference_descriptor,
+                metrics   = ("width",),
+            ))
 
-        create_source.assert_not_called()
+        self.assertEqual(result.status, "success")
+        self.assertEqual(metric_calls, ["width"])
+        self.assertEqual(
+            create_source.call_args_list,
+            [
+                call(input_descriptor),
+                call(reference_descriptor),
+            ],
+        )
 
     def test_checker_preserves_ordered_partial_results_when_interrupted(self):
         descriptor = MediaDescriptor(
@@ -348,7 +309,6 @@ class CliTests(unittest.TestCase):
                 exit_status = run([
                     "--input", str(media_path),
                     "--check", "width",
-                    "--effort", "light",
                     "--output", str(output),
                 ])
 
@@ -357,7 +317,6 @@ class CliTests(unittest.TestCase):
             self.assertEqual(request.input.path, media_path.resolve())
             self.assertEqual(request.input.extension, ".h264")
             self.assertIsNone(request.reference)
-            self.assertEqual(request.effort, "light")
 
     def test_cli_writes_success_result_with_short_arguments(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -639,27 +598,17 @@ class CliTests(unittest.TestCase):
 
 
 class HelpTests(unittest.TestCase):
-    def test_effort_defaults_to_medium_and_accepts_three_levels(self):
+    def test_removed_effort_options_are_argument_errors(self):
         parser = build_parser()
-        default = parser.parse_args(["--input", "unused.264"])
-
-        self.assertEqual(default.effort, "medium")
 
         for option in ("-e", "--effort"):
-            for effort in ("light", "medium", "high"):
-                with self.subTest(option = option, effort = effort):
-                    args = parser.parse_args([
-                        "--input", "unused.264",
-                        option, effort,
-                    ])
-                    self.assertEqual(args.effort, effort)
-
-        with redirect_stderr(io.StringIO()):
-            with self.assertRaisesRegex(SystemExit, "2"):
-                parser.parse_args([
-                    "--input", "unused.264",
-                    "--effort", "extreme",
-                ])
+            with self.subTest(option = option):
+                with redirect_stderr(io.StringIO()):
+                    with self.assertRaisesRegex(SystemExit, "2"):
+                        parser.parse_args([
+                            "--input", "unused.264",
+                            option, "light",
+                        ])
 
     def test_metric_help_is_complete_aligned_and_wrapped(self):
         expected_descriptions = {
@@ -778,15 +727,7 @@ class HelpTests(unittest.TestCase):
         self.assertIn("-c, --check [METRIC ...]", help_text)
         self.assertIn("Omit the option or names to calculate all", help_text)
         self.assertIn("[-c [METRIC ...]]", help_text)
-        self.assertIn("-e, --effort {light,medium,high}", help_text)
-        self.assertIn(
-            "Native compute effort for decoders and PSNR filters:",
-            help_text,
-        )
-        self.assertIn(
-            "high=FFmpeg automatic (default: medium)",
-            help_text,
-        )
+        self.assertNotIn("--effort", help_text)
         self.assertIn("-o, --output OUTPUT", help_text)
         self.assertNotIn("-i INPUT, --input INPUT", help_text)
 

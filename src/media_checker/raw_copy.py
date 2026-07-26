@@ -1,8 +1,8 @@
 import threading
 from typing import Any
 
-from media_checker.compute_budget import ComputeBudget
 from media_checker.errors import MediaError
+from media_checker.native_runtime import load_numpy
 
 
 _NUMPY = None
@@ -16,9 +16,8 @@ class RawFrameCopier:
         self,
         mapping: Any,
         layout: Any,
-        compute_budget: ComputeBudget,
     ):
-        self._numpy = _load_numpy(compute_budget)
+        self._numpy = _load_numpy()
         self._sources = tuple(
             self._numpy.ndarray(
                 shape = (
@@ -63,7 +62,7 @@ class RawFrameCopier:
         self._sources = ()
 
 
-def _load_numpy(compute_budget: ComputeBudget):
+def _load_numpy():
     global _NUMPY
 
     if _NUMPY is not None:
@@ -71,6 +70,6 @@ def _load_numpy(compute_budget: ComputeBudget):
 
     with _NUMPY_LOCK:
         if _NUMPY is None:
-            _NUMPY = compute_budget.load_numpy()
+            _NUMPY = load_numpy()
 
     return _NUMPY

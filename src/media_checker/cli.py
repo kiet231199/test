@@ -7,7 +7,6 @@ from textwrap import wrap
 from typing import Any, Dict, List, NoReturn, Optional
 
 from media_checker.checker import CheckInterrupted, check, normalize_metrics
-from media_checker.compute_budget import DEFAULT_EFFORT, EFFORT_LEVELS
 from media_checker.descriptors import load_input
 from media_checker.errors import ConfigurationError
 from media_checker.metrics import METRIC_HANDLERS
@@ -289,17 +288,6 @@ def build_parser() -> argparse.ArgumentParser:
         help     = metrics_help,
     )
     parser.add_argument(
-        "-e",
-        "--effort",
-        choices = EFFORT_LEVELS,
-        default = DEFAULT_EFFORT,
-        help    = (
-            "Native compute effort for decoders and PSNR filters: "
-            "light=1 thread, medium=4 threads, "
-            "high=FFmpeg automatic (default: {})"
-        ).format(DEFAULT_EFFORT),
-    )
-    parser.add_argument(
         "-o",
         "--output",
         default = DEFAULT_OUTPUT,
@@ -350,7 +338,6 @@ def _run_request(
                 input     = descriptors.input,
                 reference = descriptors.reference,
                 metrics   = metrics,
-                effort    = args.effort,
             ))
         except CheckInterrupted as interruption:
             result = interruption.result
