@@ -97,16 +97,11 @@ class CheckResult:
         return cls(status = STATUS_FAILED, error = message)
 
     def to_dict(self) -> Dict[str, Any]:
-        result = {
-            "status" : self.status,
-        }  # type: Dict[str, Any]
-
-        if self.error is not None:
-            result["error"] = self.error
-
-        result["metrics"] = {
-            name : metric.to_dict()
+        return {
+            name : (
+                metric.value
+                if metric.status == STATUS_SUCCESS
+                else None
+            )
             for name, metric in self.metrics.items()
         }
-
-        return result

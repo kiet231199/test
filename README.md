@@ -4,7 +4,7 @@
 
 - It reads metadata and stream structure.
 - It also calculates PSNR against a reference video.
-- Results are written as ordered YAML, TXT, or JSON.
+- Results are written as ordered YAML for every output file name.
 
 ## ✨ Key features
 
@@ -13,7 +13,7 @@
 - 🧩 Inspect GOPs, frame types, crop, and scan type.
 - 🖼️ Compare raw or encoded video with PSNR.
 - 📄 Load simple YAML descriptors.
-- 🧾 Write ordered `.yaml`, `.json`, or `.txt` results.
+- 🧾 Write ordered YAML results to any output file name.
 - 🧱 Keep successful metrics after another metric fails.
 - 🧵 Use one native thread per decoder or filter.
 
@@ -81,7 +81,7 @@ media-check --input <descriptor-or-video> \
 - ✅ `--check` or `-c` chooses metrics.
 - 🧮 Omit metrics to run every metric.
 - 📤 `--output` or `-o` defaults to `result.yaml`.
-- 🗃️ Output supports `.yaml`, `.json`, and `.txt`.
+- 🗃️ Output always uses YAML, regardless of its file name or extension.
 - 🔁 Duplicate metric names run once.
 
 Available metrics:
@@ -100,7 +100,7 @@ Other raw metrics return independent errors.
 media-check \
   --input media/output.265 \
   --check codec bitrate gop frame_count \
-  --output result.json
+  --output result.report
 ```
 
 Encoded input accepts `.264`, `.26l`, `.h264`, `.265`, `.h265`, and `.mp4`.
@@ -137,18 +137,22 @@ Supported raw formats are `I444`, `I420`, `YUY2`, `UYVY`, `YVYU`, `NV12`,
 
 ## 🧾 Results and exit codes
 
-Each requested metric has its own result.
+Each requested metric has its own ordered result value. Failed or unfinished
+metrics are `null`.
 
 ```yaml
-status: partial
-metrics:
-  width:
-    status: success
-    value: 224
-  psnr:
-    status: error
-    value: PSNR requires a reference descriptor
+width: 224
+psnr: null
 ```
+
+Only failed metrics are printed to the console:
+
+```text
+[ERRO] [psnr] PSNR requires a reference descriptor
+```
+
+The tags and metric name are colored when printed to a terminal. Redirected
+output has no color.
 
 - ✅ Exit `0`: every metric succeeded.
 - ⚠️ Exit `1`: one or more metrics failed.

@@ -26,7 +26,7 @@ CLI -> descriptors -> CheckRequest -> checker -> metrics registry
                                   |              |         |
                                   |              |         +-> media / psnr
                                   |              +-> CheckResult
-                                  +-> result_io -> YAML, TXT, or JSON
+                                  +-> result_io -> ordered YAML
 ```
 
 | Module | Responsibility |
@@ -39,7 +39,7 @@ CLI -> descriptors -> CheckRequest -> checker -> metrics registry
 | `media.py` | Raw layout validation, raw/encoded sources, selected-stream inspection, cached encoded analysis. |
 | `psnr.py` / `raw_copy.py` | Native FFmpeg-filter PSNR; raw adapters; lazy NumPy copy path for non-pixel-aligned stride. |
 | `native_runtime.py` | Enforce one native worker for decoders, filters, and exceptional copy work. |
-| `result_io.py` | Atomic ordered YAML/TXT/JSON output. |
+| `result_io.py` | Atomic ordered YAML output for every result path. |
 | `errors.py` | Expected configuration, media, and metric exceptions. |
 | `yaml_io.py` | Compatibility alias for the legacy writer import. |
 
@@ -57,10 +57,10 @@ media-check --input <descriptor-or-encoded-media>
 
 - `--input/-i` is required. A direct input supports encoded media only; raw media requires a descriptor.
 - `--check/-c` defaults to every registry metric, in registry order; deduplicate explicit metrics while preserving order.
-- `--output/-o` defaults to `result.yaml`; only case-insensitive `.txt`, `.yaml`, and `.json` are valid.
+- `--output/-o` defaults to `result.yaml`; every output path is valid and always receives ordered YAML.
 - `--reference/-r` is removed and remains an argument error.
 - Exit codes: `0` all metrics successful; `1` any metric failure; `2` configuration failure; `130` SIGINT; `143` SIGTERM.
-- Interactive output may use color; redirected output must not. Completed metrics survive interruption; active and later metrics become `not checked`.
+- Interactive metric-error logs use bold colored tags and cyan metric names; redirected output has no color. Completed metrics survive interruption; active and later metrics become `not checked`.
 
 ### Descriptor and media model
 
@@ -96,17 +96,15 @@ Registry metrics: `width`, `height`, `framerate`, `level`, `profile`, `codec`,
 ### Result contract
 
 ```yaml
-status: success|partial|failed
-metrics:
-  width:
-    status: success|error|not checked
-    value: 224
+width: 224
+psnr: null
 ```
 
 - Preserve requested metric order.
-- Metric errors use `value` for the error text. Request-level failures use `status: failed`, top-level `error`, and empty `metrics`.
-- Do not add `schema_version` or machine-readable error-code fields.
-- YAML and TXT use ordered YAML; JSON is ordered UTF-8, two-space indented, and ends with one newline. Write atomically.
+- Successful metrics use their value; failed and unfinished metrics use `null`. Request-level failures use an empty mapping.
+- No status, metric-wrapper, schema-version, or machine-readable error-code fields are written.
+- Every output file name uses ordered UTF-8 YAML and is written atomically.
+- Only failed metrics are printed: `[ERRO] [<metric-name>] <message>`. `[INFO]`, `[WARN]`, and `[ERRO]` have bold terminal colors; only `[ERRO]` is currently emitted.
 
 ## Development and delivery
 

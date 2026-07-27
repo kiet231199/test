@@ -12,12 +12,11 @@ from media_checker.errors import ConfigurationError
 from media_checker.metrics import METRIC_HANDLERS
 from media_checker.models import (
     STATUS_ERROR,
-    STATUS_NOT_CHECKED,
     STATUS_SUCCESS,
     CheckRequest,
     CheckResult,
 )
-from media_checker.result_io import output_format, write_result
+from media_checker.result_io import write_result
 
 
 DEFAULT_OUTPUT = "result.yaml"
@@ -28,10 +27,14 @@ EXIT_CONFIGURATION = 2
 SIGNAL_EXIT_STATUS_BASE = 128
 EXIT_INTERRUPTED = SIGNAL_EXIT_STATUS_BASE + int(signal.SIGINT)
 
-ANSI_GREEN  = "\033[32m"
-ANSI_RED    = "\033[31m"
 ANSI_YELLOW = "\033[33m"
+ANSI_CYAN   = "\033[36m"
 ANSI_RESET  = "\033[0m"
+LOG_TAG_COLORS = {
+    "INFO" : "\033[1;32m",
+    "WARN" : "\033[1;33m",
+    "ERRO" : "\033[1;31m",
+}
 HELP_MAX_POSITION = 16
 _METRIC_DESCRIPTION_WIDTH = 60
 
@@ -192,19 +195,26 @@ def _color_usage_command(help_text: str) -> str:
     )
 
 
-def _status_text(status: str, stream) -> str:
+def _format_log_tag(tag: str, stream) -> str:
+    """Render a future-facing log tag with terminal-only styling."""
+
+    text = "[{}]".format(tag)
+
     if not _supports_color(stream):
-        return status
+        return text
 
-    color = {
-        STATUS_SUCCESS : ANSI_GREEN,
-        STATUS_ERROR   : ANSI_RED,
-    }.get(status)
+    return "{}{}{}".format(LOG_TAG_COLORS[tag], text, ANSI_RESET)
 
-    if color is None:
-        return status
 
-    return "{}{}{}".format(color, status, ANSI_RESET)
+def _format_metric_name(name: str, stream) -> str:
+    """Render a metric label with terminal-only cyan emphasis."""
+
+    text = "[{}]".format(name)
+
+    if not _supports_color(stream):
+        return text
+
+    return "{}{}{}".format(ANSI_CYAN, text, ANSI_RESET)
 
 
 def _print_short_result(result: CheckResult, file = None) -> None:
@@ -212,19 +222,20 @@ def _print_short_result(result: CheckResult, file = None) -> None:
         file = sys.stdout
 
     for name, metric in result.metrics.items():
-        if metric.status == STATUS_NOT_CHECKED:
+        if metric.status != STATUS_ERROR:
             continue
 
-        print(
-            "{}: {}".format(name, _status_text(metric.status, file)),
-            file = file,
-        )
+        lines = str(metric.value or "").splitlines() or [""]
 
-        if metric.status == STATUS_ERROR:
-            lines = str(metric.value or "").splitlines() or [""]
-
-            for line in lines:
-                print("  {}".format(line), file = file)
+        for line in lines:
+            print(
+                "{} {} {}".format(
+                    _format_log_tag("ERRO", file),
+                    _format_metric_name(name, file),
+                    line,
+                ),
+                file = file,
+            )
 
 
 def _format_metrics_help() -> str:
@@ -292,7 +303,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         default = DEFAULT_OUTPUT,
         help    = (
-            "Result .txt, .yaml, or .json path (default: {})"
+            "Result path; always YAML (default: {})"
         ).format(DEFAULT_OUTPUT),
     )
 
@@ -309,12 +320,6 @@ def run(arguments: Optional[List[str]] = None) -> int:
             parser = build_parser()
             args   = parser.parse_args(arguments)
             output = Path(args.output)
-
-            try:
-                output_format(output)
-            except ConfigurationError as error:
-                print(str(error), file = sys.stderr)
-                return EXIT_CONFIGURATION
 
             return _run_request(args, output, interrupts)
     except KeyboardInterrupt:

@@ -255,14 +255,14 @@ class CliTests(unittest.TestCase):
 
             serialized = yaml.safe_load(output.read_text(encoding = "utf-8"))
             self.assertEqual(exit_status, EXIT_INTERRUPTED)
-            self.assertEqual(console.getvalue(), "width: success\n")
             self.assertEqual(
-                serialized["metrics"]["height"],
+                serialized,
                 {
-                    "status" : STATUS_NOT_CHECKED,
-                    "value"  : None,
+                    "width" : 4,
+                    "height" : None,
                 },
             )
+            self.assertEqual(console.getvalue(), "")
 
     def test_sigterm_uses_the_conventional_interrupted_exit_status(self):
         interrupts = _InterruptSignals()
@@ -338,10 +338,8 @@ class CliTests(unittest.TestCase):
             result = yaml.safe_load(output.read_text(encoding = "utf-8"))
 
             self.assertEqual(exit_status, EXIT_SUCCESS)
-            self.assertEqual(result["status"], "success")
-            self.assertEqual(list(result["metrics"]), ["psnr"])
-            self.assertNotIn("schema_version", result)
-            self.assertEqual(console.getvalue(), "psnr: success\n")
+            self.assertEqual(result, {"psnr" : 1000.0})
+            self.assertEqual(console.getvalue(), "")
             self.assertNotIn("1000.0", console.getvalue())
 
     def test_cli_uses_default_output_and_reports_partial_result(self):
@@ -369,18 +367,11 @@ class CliTests(unittest.TestCase):
             result = yaml.safe_load(result_path.read_text(encoding = "utf-8"))
 
             self.assertEqual(exit_status, EXIT_METRIC_FAILED)
-            self.assertEqual(result["status"], "partial")
-            self.assertEqual(result["metrics"]["width"]["status"], "error")
-            self.assertEqual(
-                result["metrics"]["width"]["value"],
-                "Unsupported metrics",
-            )
-            self.assertEqual(result["metrics"]["psnr"]["value"], 1000.0)
-            self.assertNotIn("error", result["metrics"]["width"])
+            self.assertEqual(result, {"width" : None, "psnr" : 1000.0})
             self.assertFalse((root / "metrics-result.yaml").exists())
             self.assertEqual(
                 console.getvalue(),
-                "width: error\n  Unsupported metrics\npsnr: success\n",
+                "[ERRO] [width] Unsupported metrics\n",
             )
 
     def test_cli_loads_reference_from_the_input_document(self):
@@ -404,9 +395,9 @@ class CliTests(unittest.TestCase):
             result = yaml.safe_load(output.read_text(encoding = "utf-8"))
 
             self.assertEqual(exit_status, EXIT_SUCCESS)
-            self.assertEqual(result["metrics"]["psnr"]["value"], 1000.0)
+            self.assertEqual(result, {"psnr" : 1000.0})
 
-    def test_metric_error_is_written_in_the_value_field(self):
+    def test_metric_error_is_serialized_as_null(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / "input.raw").write_bytes(bytes(8))
@@ -423,9 +414,7 @@ class CliTests(unittest.TestCase):
             result = yaml.safe_load(output.read_text(encoding = "utf-8"))
 
             self.assertEqual(exit_status, EXIT_METRIC_FAILED)
-            self.assertEqual(result["metrics"]["psnr"]["status"], "error")
-            self.assertIsInstance(result["metrics"]["psnr"]["value"], str)
-            self.assertNotIn("error", result["metrics"]["psnr"])
+            self.assertEqual(result, {"psnr" : None})
 
     def test_configuration_error_has_no_schema_version_or_error_code(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -442,11 +431,7 @@ class CliTests(unittest.TestCase):
             result = yaml.safe_load(output.read_text(encoding = "utf-8"))
 
             self.assertEqual(exit_status, EXIT_CONFIGURATION)
-            self.assertEqual(result["status"], "failed")
-            self.assertIsInstance(result["error"], str)
-            self.assertEqual(result["metrics"], {})
-            self.assertNotIn("schema_version", result)
-            self.assertNotIn("code", result)
+            self.assertEqual(result, {})
             self.assertEqual(console.getvalue(), "")
 
     def test_metric_names_are_deduplicated_in_order(self):
@@ -475,13 +460,15 @@ class CliTests(unittest.TestCase):
             result = yaml.safe_load(output.read_text(encoding = "utf-8"))
 
             self.assertEqual(exit_status, EXIT_METRIC_FAILED)
-            self.assertEqual(list(result["metrics"]), list(METRIC_HANDLERS))
-            self.assertEqual(result["metrics"]["width"]["status"], "error")
-            self.assertEqual(result["metrics"]["psnr"]["status"], "success")
-            self.assertTrue(console.getvalue().startswith("width: error\n"))
-            self.assertTrue(console.getvalue().endswith("psnr: success\n"))
+            self.assertEqual(list(result), list(METRIC_HANDLERS))
+            self.assertIsNone(result["width"])
+            self.assertEqual(result["psnr"], 1000.0)
+            self.assertTrue(console.getvalue().startswith(
+                "[ERRO] [width] Unsupported metrics\n",
+            ))
+            self.assertNotIn("[psnr]", console.getvalue())
 
-    def test_short_result_colors_only_statuses_for_a_terminal(self):
+    def test_short_result_logs_only_errors_and_colors_a_terminal(self):
         result = CheckResult(
             status = "partial",
             metrics = {
@@ -497,17 +484,13 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(
             terminal_output.getvalue(),
-            "width: \x1b[32msuccess\x1b[0m\n"
-            "level: \x1b[31merror\x1b[0m\n"
-            "  first line\n"
-            "  second line\n",
+            "\x1b[1;31m[ERRO]\x1b[0m \x1b[36m[level]\x1b[0m first line\n"
+            "\x1b[1;31m[ERRO]\x1b[0m \x1b[36m[level]\x1b[0m second line\n",
         )
         self.assertEqual(
             redirected_output.getvalue(),
-            "width: success\n"
-            "level: error\n"
-            "  first line\n"
-            "  second line\n",
+            "[ERRO] [level] first line\n"
+            "[ERRO] [level] second line\n",
         )
 
     def test_output_write_failure_does_not_print_short_result(self):
@@ -547,7 +530,7 @@ class CliTests(unittest.TestCase):
             with redirect_stdout(BrokenStringIO()), redirect_stderr(errors):
                 exit_status = run([
                     "--input", str(descriptor),
-                    "--check", "psnr",
+                    "--check", "width",
                     "--output", str(output),
                 ])
 
@@ -573,7 +556,7 @@ class CliTests(unittest.TestCase):
             result = yaml.safe_load(output.read_text(encoding = "utf-8"))
 
             self.assertEqual(exit_status, EXIT_METRIC_FAILED)
-            self.assertEqual(list(result["metrics"]), list(METRIC_HANDLERS))
+            self.assertEqual(list(result), list(METRIC_HANDLERS))
 
     def test_core_checker_rejects_an_empty_metric_request(self):
         descriptor = MediaDescriptor(
