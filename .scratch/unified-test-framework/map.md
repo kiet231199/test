@@ -10,6 +10,7 @@ One unified codec test framework in this repo: one Excel spec format, one Python
 
 - Domain: GStreamer/Allegro codec testing on an NFS-booted board (RZ/G3E), driven from a LabPC over `ssh root@192.168.5.<ip>`.
 - Skills for resolving sessions: grilling (domain-modeling is not installed); prototype is allowed for the schema ticket.
+- Prototype hygiene: agents must not explore `assets` during ticket work — it only burns tokens. Read it only when starting to plan + develop the real product, or when the user explicitly asks.
 - References: `Refer/` (gitignored) holds the three legacy programs; `create_test.py` + `scripts/` hold the current draft attempt.
 - Standing decisions from the charting session (2026-08-17):
   - Scope: unified framework plus migration of all three programs (Allegro streams, GST Decode, GST Encode).
@@ -25,6 +26,7 @@ One unified codec test framework in this repo: one Excel spec format, one Python
 <!-- the index â€” one line per closed ticket: enough to judge relevance, then zoom the link for the detail the ticket holds -->
 
 - [Unified Excel schema](issues/01-unified-excel-schema.md) — skeleton + free info region; Input/Output columns abolished: the check searches `output.*`/`reference.*` in the case directory; Prerun (board) / Precheck (PC) user hooks; metric vocabulary = media-check names + `return`, `fps` reserved; criteria DSL kept
+- [Generated program contract](issues/02-generated-program-contract.md) — `runner.sh` + `out/<suite>/<case>/script.sh` and `case.conf`; `case.conf` = `TIMEOUT=`/`SKIP_REASON=`/`CHECK_METRICS=`; criteria compile into `script.sh`; lowercase criteria-ordered CSV; generation-time validation
 
 ## Not yet specified
 

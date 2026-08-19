@@ -1,0 +1,5 @@
+== precheck ==
+mock media-check: wrote /c/Data/Working/01_Codec/test_program/.scratch/unified-test-framework/assets/prototype-02-program-contract/out/omx_filesink/omx_filesink_0001_normal_psnr/result.yaml
+[  OK   ] return = 0
+[  OK   ] psnr = 31.42
+PASSED

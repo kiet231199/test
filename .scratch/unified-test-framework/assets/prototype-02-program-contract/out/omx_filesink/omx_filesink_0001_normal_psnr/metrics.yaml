@@ -1,0 +1,4 @@
+input:
+  path: /c/Data/Working/01_Codec/test_program/.scratch/unified-test-framework/assets/prototype-02-program-contract/out/omx_filesink/omx_filesink_0001_normal_psnr/output.yuv
+reference:
+  path: /c/Data/Working/01_Codec/test_program/.scratch/unified-test-framework/assets/prototype-02-program-contract/out/omx_filesink/omx_filesink_0001_normal_psnr/reference.mp4
